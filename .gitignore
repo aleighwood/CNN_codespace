@@ -14,3 +14,5 @@ ENV/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
+
+.not_in_use.py
