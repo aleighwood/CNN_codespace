@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 
-def FC_forward_prop(A_prev,weights,bias):
+def fully_connected(A_prev,weights,bias):
     """
     Forward propagation of a fully conneced NN 
     
@@ -30,7 +30,7 @@ def FC_forward_prop(A_prev,weights,bias):
         
     return A
 
-def FC_forward_prop_tf(A_prev,weights,bias):
+def fully_connected_tf(A_prev,weights,bias):
     """
     Forward propagation of a fully conneced NN using TF
     
@@ -66,7 +66,7 @@ def FC_forward_prop_tf(A_prev,weights,bias):
 
 
 
-
+#testing against tf implementation
 m =1
 N_prev = 4
 N = 3
@@ -74,8 +74,8 @@ bias = np.ones((N,1))
 A_prev = np.ones((m,N_prev,1))
 weights = np.ones((N_prev,N))
 
-Z_dense = FC_forward_prop(A_prev,weights,bias)
-Z_dense_tf = FC_forward_prop_tf(A_prev,weights,bias)
+Z_dense = fully_connected(A_prev,weights,bias)
+Z_dense_tf = fully_connected_tf(A_prev,weights,bias)
 
 error = np.max(np.abs(Z_dense-Z_dense_tf))
 print(error)
