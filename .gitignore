@@ -14,3 +14,7 @@ ENV/
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
+
+# Environment files
+environment.yml
+requirements.txt
