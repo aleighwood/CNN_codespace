@@ -1,3 +1,9 @@
+import numpy as np
+import tensorflow as tf
+
+from .conv import conv_single_step
+from .zero_pad import zero_pad
+
 #Depthwise seperable convolution function
 def depthwise_conv_tf(A, W_depthwise, W_pointwise, b, stride, pad):
     """
@@ -58,7 +64,10 @@ def depthwise_conv_tf(A, W_depthwise, W_pointwise, b, stride, pad):
 
 def depthwise_conv(A,W_depthwise,W_pointwise,b,stride,pad):
     """
-    Implements the forward propagation for a DWS convolution function
+    Implements the forward propagation for a depthwise separable convolution function.
+    Note: This fuses depthwise and pointwise in one call and does **not** insert
+    batch-norm/activation between them. For MobileNet-style blocks, prefer
+    `depthwise_conv_only` followed by 1x1 `conv`.
     
     Arguments:
     A -- output activations of the previous layer, 
@@ -66,34 +75,26 @@ def depthwise_conv(A,W_depthwise,W_pointwise,b,stride,pad):
     W_depthwise -- Weights for depthwise convolution, numpy array of shape (f, f, n_C_prev)
     W_pointwise -- Weights for pointwise convolution, numpy array of shape (1,1,n_C_prev,n_C)
     b -- Biases, numpy array of shape (1,n_C)
-    stride
-    pad
+    stride -- stride for the depthwise operation
+    pad -- zero padding to apply before depthwise
         
     Returns:
     output -- conv output, numpy array of shape (m, n_H, n_W, n_C)
     
     """
     
-    # Retrieve dimensions from A_prev's shape (≈1 line)  
+    # Retrieve dimensions from A_prev's shape
     (m, n_H_prev, n_W_prev, n_C_prev) = np.shape(A) 
     
-    # Retrieve dimensions from W's shape (≈1 line)
+    # Retrieve dimensions from W's shape
     (f, f, n_C_prev) = np.shape(W_depthwise)
     n_C = np.shape(W_pointwise)[3]
     f_pointwise = 1
-    
-
-    print(f'N_C_prev: {n_C_prev}')
-    print(f'A size: {np.shape(A)}')
-    # Retrieve information from "hparameters" (≈2 lines)
-    #stride = hparameters["stride"]
-    #pad = hparameters["pad"]
     
     # Compute the dimensions of the CONV output volume using the formula given above. 
     n_H = int((n_H_prev - f + 2*pad)/stride)+1
     n_W = int((n_W_prev - f + 2*pad)/stride)+1
     
-    # Initialize the output volume Z with zeros. (≈1 line)
     Z = np.zeros((m,n_H,n_W,n_C_prev))
     output = np.zeros((m,n_H,n_W,n_C))
     
@@ -101,21 +102,17 @@ def depthwise_conv(A,W_depthwise,W_pointwise,b,stride,pad):
     A_prev_pad = zero_pad(A,pad)
     
     #perform depthwise convolution
-    #loop through all data
     for i in range(m):
-        #select ith image 
         a_prev_pad = A_prev_pad[i,:,:,:]
         for h in range(n_H):
-            #start and end of current vertical slice
             vert_start = h*stride
             vert_end = h*stride+f
             
             for w in range(n_W):
-                #start and end of current horizontal slice
                 horiz_start = w*stride
                 horiz_end = w*stride+f
                 
-                #loop through all filters nc, 2D convolution each time
+                # 2D convolution per channel
                 for j in range(n_C_prev):
                     a_slice_prev = a_prev_pad[vert_start:vert_end,horiz_start:horiz_end,j]
 
@@ -125,19 +122,15 @@ def depthwise_conv(A,W_depthwise,W_pointwise,b,stride,pad):
                     Z[i,h,w,j] = conv_single_step(a_slice_prev,weights,biases, False)
 
     # perform pointwise
-
     for i in range(m):
-        #select image 
         Z_prev = Z[i,:,:,:]
         for h in range(n_H):
             vert_start = h
             vert_end = h+f_pointwise
             for w in range(n_W):
-                #start and end of current horizontal slice
                 horiz_start = w
                 horiz_end = w+f_pointwise
                 for p in range(n_C):
-                    #take whole 'depth' column
                     DWS_prev = Z_prev[vert_start:vert_end,horiz_start:horiz_end,:]
                     weights = W_pointwise[:,:,:,p]
                     biases = b[:,p]
@@ -145,67 +138,33 @@ def depthwise_conv(A,W_depthwise,W_pointwise,b,stride,pad):
                     output[i,h,w,p] = conv_single_step(DWS_prev,weights,biases,True)
 
     return output
-        
-#Average pooling 
 
-    """
-    Implements average pooling layer
-    
-    Arguments:
-    A_prev -- output activations of the previous layer, 
-        numpy array of shape (m, n_H_prev, n_W_prev, n_C_prev)
-    filter -- filter size, int
-    stride -- stride, int
-    pad -- pad, int
 
-        
-    Returns:
-    Z -- avg pool, numpy array of shape (m, n_H, n_W, n_C)
+def depthwise_conv_only(A, W_depthwise, stride, pad):
     """
-    
-    # Retrieve dimensions from A_prev's shape (≈1 line)  
-    (m, n_H_prev, n_W_prev, n_C_prev) = np.shape(A_prev) 
-    
-    # Retrieve dimensions from W's shape (≈1 line)
-    (f, f, n_C_prev, n_C) = np.shape(W)
-    
-    # Retrieve information from "hparameters" (≈2 lines)
-    #stride = hparameters["stride"]
-    #pad = hparameters["pad"]
-    
-    # Compute the dimensions of the CONV output volume using the formula given above. 
-    n_H = int((n_H_prev - f + 2*pad)/stride)+1
-    n_W = int((n_W_prev - f + 2*pad)/stride)+1
-    
-    # Initialize the output volume Z with zeros. (≈1 line)
-    Z = np.zeros((m,n_H,n_W,n_C))
-    
-    # Create A_prev_pad by padding A_prev
-    A_prev_pad = zero_pad(A_prev,pad)
-    
-    #loop through all data
+    Depthwise-only convolution (no pointwise conv, no bias). Useful for MobileNet
+    where batch-norm + ReLU6 are applied between depthwise and pointwise steps.
+    """
+    m, n_H_prev, n_W_prev, n_C_prev = np.shape(A)
+    f = W_depthwise.shape[0]
+
+    n_H = int((n_H_prev - f + 2 * pad) / stride) + 1
+    n_W = int((n_W_prev - f + 2 * pad) / stride) + 1
+
+    Z = np.zeros((m, n_H, n_W, n_C_prev))
+    A_prev_pad = zero_pad(A, pad)
+
     for i in range(m):
-        #select ith image 
-        a_prev_pad = A_prev_pad[i,:,:,:]
+        a_prev_pad = A_prev_pad[i, :, :, :]
         for h in range(n_H):
-            #start and end of current vertical slice
-            vert_start = h*stride
-            vert_end = h*stride+f
-            
+            vert_start = h * stride
+            vert_end = vert_start + f
             for w in range(n_W):
-                #start and end of current horizontal slice
-                horiz_start = w*stride
-                horiz_end = w*stride+f
-                
-                #loop through all filters nc', 3D block convolution each time
-                for c in range(n_C):
-                    #select slice
-                    a_slice_prev = a_prev_pad[vert_start:vert_end,horiz_start:horiz_end,:]
+                horiz_start = w * stride
+                horiz_end = horiz_start + f
+                for j in range(n_C_prev):
+                    a_slice_prev = a_prev_pad[vert_start:vert_end, horiz_start:horiz_end, j]
+                    weights = W_depthwise[:, :, j]
+                    Z[i, h, w, j] = conv_single_step(a_slice_prev, weights, 0, add_bias=False)
 
-                    weights = W[:,:,:,c]
-
-                    biases = b[:,:,:,c]
-
-                    Z[i,h,w,c] = conv_single_step(a_slice_prev,weights,biases)
-                    
     return Z
