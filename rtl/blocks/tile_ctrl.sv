@@ -58,6 +58,9 @@ module tile_ctrl #(
     logic last_tile;
     logic handshake;
 
+    logic [DIM_W-1:0] pad_top;
+    logic [DIM_W-1:0] pad_left;
+
     assign cfg_ready = !active;
     assign handshake = tile_valid && tile_ready;
 
@@ -91,12 +94,10 @@ module tile_ctrl #(
                 pad_reg <= cfg_pad;
                 kernel_reg <= cfg_kernel;
 
-                out_h_reg <= (cfg_img_h + (cfg_pad << 1) - cfg_kernel) / cfg_stride + 1'b1;
-                out_w_reg <= (cfg_img_w + (cfg_pad << 1) - cfg_kernel) / cfg_stride + 1'b1;
-                tiles_h_reg <= ceil_div((cfg_img_h + (cfg_pad << 1) - cfg_kernel) / cfg_stride + 1,
-                                         cfg_tile_h);
-                tiles_w_reg <= ceil_div((cfg_img_w + (cfg_pad << 1) - cfg_kernel) / cfg_stride + 1,
-                                         cfg_tile_w);
+                out_h_reg <= ceil_div(cfg_img_h, cfg_stride);
+                out_w_reg <= ceil_div(cfg_img_w, cfg_stride);
+                tiles_h_reg <= ceil_div(ceil_div(cfg_img_h, cfg_stride), cfg_tile_h);
+                tiles_w_reg <= ceil_div(ceil_div(cfg_img_w, cfg_stride), cfg_tile_w);
                 cfg_loaded <= 1'b1;
             end
 
@@ -123,6 +124,26 @@ module tile_ctrl #(
     end
 
     always_comb begin
+        int pad_h_calc;
+        int pad_w_calc;
+        int pad_top_calc;
+        int pad_left_calc;
+
+        pad_h_calc = (out_h_reg - 1) * stride_reg + kernel_reg - img_h_reg;
+        if (pad_h_calc < 0) begin
+            pad_h_calc = 0;
+        end
+        pad_top_calc = pad_h_calc / 2;
+
+        pad_w_calc = (out_w_reg - 1) * stride_reg + kernel_reg - img_w_reg;
+        if (pad_w_calc < 0) begin
+            pad_w_calc = 0;
+        end
+        pad_left_calc = pad_w_calc / 2;
+
+        pad_top = pad_top_calc[DIM_W-1:0];
+        pad_left = pad_left_calc[DIM_W-1:0];
+
         tile_out_row = tile_row_idx * tile_h_reg;
         tile_out_col = tile_col_idx * tile_w_reg;
 
@@ -138,8 +159,8 @@ module tile_ctrl #(
             tile_out_w = tile_w_reg;
         end
 
-        tile_in_row = $signed({1'b0, tile_out_row} * stride_reg) - $signed({1'b0, pad_reg});
-        tile_in_col = $signed({1'b0, tile_out_col} * stride_reg) - $signed({1'b0, pad_reg});
+        tile_in_row = $signed({1'b0, tile_out_row} * stride_reg) - $signed({1'b0, pad_top});
+        tile_in_col = $signed({1'b0, tile_out_col} * stride_reg) - $signed({1'b0, pad_left});
 
         tile_in_h = (tile_out_h - 1'b1) * stride_reg + kernel_reg;
         tile_in_w = (tile_out_w - 1'b1) * stride_reg + kernel_reg;

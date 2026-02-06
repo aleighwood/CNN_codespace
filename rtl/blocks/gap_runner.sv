@@ -1,7 +1,7 @@
 module gap_runner #(
     parameter int DATA_W = 8,
     parameter int ACC_W = 32,
-    parameter int MUL_W = 16,
+    parameter int MUL_W = 32,
     parameter int BIAS_W = 32,
     parameter int SHIFT_W = 6,
     parameter int ADDR_W = 32,
@@ -63,11 +63,10 @@ module gap_runner #(
 
     assign busy = (state != S_IDLE);
 
-    requant_relu6 #(
+    requant_q31 #(
         .DATA_W(DATA_W),
         .ACC_W(ACC_W),
         .MUL_W(MUL_W),
-        .BIAS_W(BIAS_W),
         .SHIFT_W(SHIFT_W)
     ) u_requant (
         .clk(clk),
@@ -75,9 +74,9 @@ module gap_runner #(
         .in_valid(rq_in_valid),
         .in_ready(rq_in_ready),
         .in_acc(acc),
-        .mul(gap_mul),
-        .bias(gap_bias),
+        .mul_q31(gap_mul),
         .shift(gap_shift),
+        .zp_out('0),
         .relu6_max({DATA_W{1'b1}}),
         .relu6_en(1'b0),
         .out_valid(rq_out_valid),

@@ -1,40 +1,48 @@
 module mobilenet_v1_top #(
     parameter int DATA_W = 8,
     parameter int ACC_W = 32,
-    parameter int MUL_W = 16,
+    parameter int MUL_W = 32,
     parameter int BIAS_W = 32,
     parameter int SHIFT_W = 6,
     parameter int ADDR_W = 32,
     parameter int DIM_W = 16,
-    parameter int OC_PAR = 4,
-    parameter int PW_GROUP = 4,
+    parameter int OC_PAR = 16,
+    parameter int PW_GROUP = 32,
+    parameter int PW_OC_PAR = 32,
+    parameter int PW_IC_PAR = 16,
     parameter int FC_OUT_CH = 1000,
-    parameter int TILE_H = 16,
-    parameter int TILE_W = 16,
+    parameter int TILE_H = 32,
+    parameter int TILE_W = 32,
+    parameter int INPUT_ZP = -1,
+    parameter int ACT_ZP = -128,
     parameter string INIT_CONV1_W = "",
     parameter string INIT_CONV1_BIAS_ACC = "",
     parameter string INIT_CONV1_MUL = "",
     parameter string INIT_CONV1_BIAS_RQ = "",
     parameter string INIT_CONV1_SHIFT = "",
     parameter string INIT_CONV1_RELU6 = "",
+    parameter string INIT_CONV1_RELU6_MIN = "",
     parameter string INIT_DW_W = "",
     parameter string INIT_DW_MUL = "",
     parameter string INIT_DW_BIAS = "",
     parameter string INIT_DW_SHIFT = "",
     parameter string INIT_DW_RELU6 = "",
+    parameter string INIT_DW_RELU6_MIN = "",
     parameter string INIT_PW_W = "",
     parameter string INIT_PW_BIAS_ACC = "",
     parameter string INIT_PW_MUL = "",
     parameter string INIT_PW_BIAS_RQ = "",
     parameter string INIT_PW_SHIFT = "",
     parameter string INIT_PW_RELU6 = "",
+    parameter string INIT_PW_RELU6_MIN = "",
     parameter string INIT_GAP_MUL = "",
     parameter string INIT_GAP_BIAS = "",
     parameter string INIT_GAP_SHIFT = "",
     parameter string INIT_FC_W = "",
     parameter string INIT_FC_MUL = "",
     parameter string INIT_FC_BIAS = "",
-    parameter string INIT_FC_SHIFT = ""
+    parameter string INIT_FC_SHIFT = "",
+    parameter string INIT_FC_ZP = ""
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -58,13 +66,16 @@ module mobilenet_v1_top #(
     output logic [ADDR_W-1:0] fm_rd_addr,
     input  logic [DATA_W-1:0] fm_rd_data,
 
-    output logic fm_wr_en,
-    output logic [ADDR_W-1:0] fm_wr_addr,
-    output logic [DATA_W-1:0] fm_wr_data,
+    output logic fm_wr_en0,
+    output logic [ADDR_W-1:0] fm_wr_addr0,
+    output logic [DATA_W-1:0] fm_wr_data0,
+    output logic fm_wr_en1,
+    output logic [ADDR_W-1:0] fm_wr_addr1,
+    output logic [DATA_W-1:0] fm_wr_data1,
 
-    output logic dw_buf_rd_en,
-    output logic [ADDR_W-1:0] dw_buf_rd_addr,
-    input  logic [DATA_W-1:0] dw_buf_rd_data,
+    output logic [PW_IC_PAR-1:0] dw_buf_rd_en,
+    output logic [PW_IC_PAR*ADDR_W-1:0] dw_buf_rd_addr,
+    input  logic [PW_IC_PAR*DATA_W-1:0] dw_buf_rd_data,
 
     output logic dw_buf_wr_en,
     output logic [ADDR_W-1:0] dw_buf_wr_addr,
@@ -132,9 +143,12 @@ module mobilenet_v1_top #(
 
     logic dws_in_rd_en;
     logic [ADDR_W-1:0] dws_in_rd_addr;
-    logic dws_out_wr_en;
-    logic [ADDR_W-1:0] dws_out_wr_addr;
-    logic [DATA_W-1:0] dws_out_wr_data;
+    logic dws_out_wr_en0;
+    logic [ADDR_W-1:0] dws_out_wr_addr0;
+    logic [DATA_W-1:0] dws_out_wr_data0;
+    logic dws_out_wr_en1;
+    logic [ADDR_W-1:0] dws_out_wr_addr1;
+    logic [DATA_W-1:0] dws_out_wr_data1;
 
     logic gap_in_rd_en;
     logic [ADDR_W-1:0] gap_in_rd_addr;
@@ -168,19 +182,21 @@ module mobilenet_v1_top #(
     logic signed [OC_PAR*BIAS_W-1:0] conv1_bias_requant_vec;
     logic [OC_PAR*SHIFT_W-1:0] conv1_shift_vec;
     logic signed [OC_PAR*DATA_W-1:0] conv1_relu6_max_vec;
+    logic signed [OC_PAR*DATA_W-1:0] conv1_relu6_min_vec;
 
     logic signed [DATA_W*9-1:0] dw_weight_flat;
     logic signed [MUL_W-1:0] dw_mul;
     logic signed [BIAS_W-1:0] dw_bias;
     logic [SHIFT_W-1:0] dw_shift;
     logic signed [DATA_W-1:0] dw_relu6_max;
+    logic signed [DATA_W-1:0] dw_relu6_min;
 
-    logic signed [DATA_W-1:0] pw_weight;
-    logic signed [ACC_W-1:0] pw_bias_acc;
-    logic signed [MUL_W-1:0] pw_mul;
-    logic signed [BIAS_W-1:0] pw_bias_requant;
-    logic [SHIFT_W-1:0] pw_shift;
-    logic signed [DATA_W-1:0] pw_relu6_max;
+    logic signed [PW_OC_PAR*PW_IC_PAR*DATA_W-1:0] pw_weight_vec;
+    logic signed [PW_OC_PAR*ACC_W-1:0] pw_bias_acc_vec;
+    logic signed [PW_OC_PAR*MUL_W-1:0] pw_mul_vec;
+    logic [PW_OC_PAR*SHIFT_W-1:0] pw_shift_vec;
+    logic signed [PW_OC_PAR*DATA_W-1:0] pw_relu6_max_vec;
+    logic signed [PW_OC_PAR*DATA_W-1:0] pw_relu6_min_vec;
 
     logic signed [MUL_W-1:0] gap_mul;
     logic signed [BIAS_W-1:0] gap_bias;
@@ -188,8 +204,12 @@ module mobilenet_v1_top #(
 
     logic signed [DATA_W-1:0] fc_weight;
     logic signed [MUL_W-1:0] fc_mul;
-    logic signed [BIAS_W-1:0] fc_bias;
+    logic signed [ACC_W-1:0] fc_bias_acc;
     logic [SHIFT_W-1:0] fc_shift;
+    logic signed [DATA_W-1:0] fc_zp;
+
+    localparam logic signed [DATA_W-1:0] INPUT_ZP_S = INPUT_ZP;
+    localparam logic signed [DATA_W-1:0] ACT_ZP_S = ACT_ZP;
 
     mobilenet_v1_ctrl #(
         .DIM_W(DIM_W),
@@ -243,6 +263,10 @@ module mobilenet_v1_top #(
         .SHIFT_W(SHIFT_W),
         .ADDR_W(ADDR_W),
         .DIM_W(DIM_W),
+        .MAX_TILE_IN_W((TILE_W * 2) + 1),
+        .MAX_TILE_IN_H((TILE_H * 2) + 1),
+        .MAX_TILE_OUT_W(TILE_W),
+        .MAX_TILE_OUT_H(TILE_H),
         .OC_PAR(OC_PAR)
     ) u_conv1 (
         .clk(clk),
@@ -265,6 +289,7 @@ module mobilenet_v1_top #(
         .cfg_in_channels(cur_in_c),
         .cfg_out_channels(cur_out_c),
         .cfg_stride(cur_stride),
+        .cfg_pad_value(INPUT_ZP_S),
         .cfg_in_base_addr(in_base_addr),
         .cfg_out_base_addr(out_base_addr),
         .in_rd_en(conv1_in_rd_en),
@@ -279,6 +304,7 @@ module mobilenet_v1_top #(
         .bias_requant_vec(conv1_bias_requant_vec),
         .shift_vec(conv1_shift_vec),
         .relu6_max_vec(conv1_relu6_max_vec),
+        .relu6_min_vec(conv1_relu6_min_vec),
         .ic_idx(conv1_ic_idx),
         .oc_group_idx(conv1_oc_group_idx)
     );
@@ -291,7 +317,13 @@ module mobilenet_v1_top #(
         .SHIFT_W(SHIFT_W),
         .ADDR_W(ADDR_W),
         .DIM_W(DIM_W),
-        .PW_GROUP(PW_GROUP)
+        .MAX_TILE_IN_W((TILE_W * 2) + 1),
+        .MAX_TILE_IN_H((TILE_H * 2) + 1),
+        .MAX_TILE_OUT_H(TILE_H),
+        .MAX_TILE_OUT_W(TILE_W),
+        .PW_GROUP(PW_GROUP),
+        .PW_OC_PAR(PW_OC_PAR),
+        .PW_IC_PAR(PW_IC_PAR)
     ) u_dws (
         .clk(clk),
         .rst_n(rst_n),
@@ -313,6 +345,7 @@ module mobilenet_v1_top #(
         .cfg_in_channels(cur_in_c),
         .cfg_out_channels(cur_out_c),
         .cfg_stride(cur_stride),
+        .cfg_pad_value(ACT_ZP_S),
         .cfg_in_base_addr(in_base_addr),
         .cfg_out_base_addr(out_base_addr),
         .cfg_dw_buf_base_addr(dw_buf_base_addr),
@@ -323,22 +356,26 @@ module mobilenet_v1_top #(
         .dw_buf_wr_addr(dw_buf_wr_addr),
         .dw_buf_wr_data(dw_buf_wr_data),
         .dw_buf_rd_en(dw_buf_rd_en),
-        .dw_buf_rd_addr(dw_buf_rd_addr),
-        .dw_buf_rd_data(dw_buf_rd_data),
-        .out_wr_en(dws_out_wr_en),
-        .out_wr_addr(dws_out_wr_addr),
-        .out_wr_data(dws_out_wr_data),
+        .dw_buf_rd_addr_vec(dw_buf_rd_addr),
+        .dw_buf_rd_data_vec(dw_buf_rd_data),
+        .out_wr_en0(dws_out_wr_en0),
+        .out_wr_addr0(dws_out_wr_addr0),
+        .out_wr_data0(dws_out_wr_data0),
+        .out_wr_en1(dws_out_wr_en1),
+        .out_wr_addr1(dws_out_wr_addr1),
+        .out_wr_data1(dws_out_wr_data1),
         .dw_weight_flat(dw_weight_flat),
         .dw_mul(dw_mul),
         .dw_bias(dw_bias),
         .dw_shift(dw_shift),
         .dw_relu6_max(dw_relu6_max),
-        .pw_weight(pw_weight),
-        .pw_bias_acc(pw_bias_acc),
-        .pw_mul(pw_mul),
-        .pw_bias_requant(pw_bias_requant),
-        .pw_shift(pw_shift),
-        .pw_relu6_max(pw_relu6_max),
+        .dw_relu6_min(dw_relu6_min),
+        .pw_weight_vec(pw_weight_vec),
+        .pw_bias_acc_vec(pw_bias_acc_vec),
+        .pw_mul_vec(pw_mul_vec),
+        .pw_shift_vec(pw_shift_vec),
+        .pw_relu6_max_vec(pw_relu6_max_vec),
+        .pw_relu6_min_vec(pw_relu6_min_vec),
         .dw_ch_idx(dw_ch_idx),
         .pw_in_ch_idx(pw_in_ch_idx),
         .pw_out_ch_idx(pw_out_ch_idx),
@@ -406,8 +443,9 @@ module mobilenet_v1_top #(
         .fc_out_idx(fc_out_idx),
         .fc_weight(fc_weight),
         .fc_mul(fc_mul),
-        .fc_bias(fc_bias),
-        .fc_shift(fc_shift)
+        .fc_bias_acc(fc_bias_acc),
+        .fc_shift(fc_shift),
+        .fc_zp(fc_zp)
     );
 
     mobilenet_v1_param_cache #(
@@ -421,6 +459,8 @@ module mobilenet_v1_top #(
         .WR_ADDR_W(20),
         .WR_W(32),
         .PW_GROUP(PW_GROUP),
+        .PW_OC_PAR(PW_OC_PAR),
+        .PW_IC_PAR(PW_IC_PAR),
         .FC_OUT_CH(FC_OUT_CH),
         .INIT_CONV1_W(INIT_CONV1_W),
         .INIT_CONV1_BIAS_ACC(INIT_CONV1_BIAS_ACC),
@@ -428,24 +468,28 @@ module mobilenet_v1_top #(
         .INIT_CONV1_BIAS_RQ(INIT_CONV1_BIAS_RQ),
         .INIT_CONV1_SHIFT(INIT_CONV1_SHIFT),
         .INIT_CONV1_RELU6(INIT_CONV1_RELU6),
+        .INIT_CONV1_RELU6_MIN(INIT_CONV1_RELU6_MIN),
         .INIT_DW_W(INIT_DW_W),
         .INIT_DW_MUL(INIT_DW_MUL),
         .INIT_DW_BIAS(INIT_DW_BIAS),
         .INIT_DW_SHIFT(INIT_DW_SHIFT),
         .INIT_DW_RELU6(INIT_DW_RELU6),
+        .INIT_DW_RELU6_MIN(INIT_DW_RELU6_MIN),
         .INIT_PW_W(INIT_PW_W),
         .INIT_PW_BIAS_ACC(INIT_PW_BIAS_ACC),
         .INIT_PW_MUL(INIT_PW_MUL),
         .INIT_PW_BIAS_RQ(INIT_PW_BIAS_RQ),
         .INIT_PW_SHIFT(INIT_PW_SHIFT),
         .INIT_PW_RELU6(INIT_PW_RELU6),
+        .INIT_PW_RELU6_MIN(INIT_PW_RELU6_MIN),
         .INIT_GAP_MUL(INIT_GAP_MUL),
         .INIT_GAP_BIAS(INIT_GAP_BIAS),
         .INIT_GAP_SHIFT(INIT_GAP_SHIFT),
         .INIT_FC_W(INIT_FC_W),
         .INIT_FC_MUL(INIT_FC_MUL),
         .INIT_FC_BIAS(INIT_FC_BIAS),
-        .INIT_FC_SHIFT(INIT_FC_SHIFT)
+        .INIT_FC_SHIFT(INIT_FC_SHIFT),
+        .INIT_FC_ZP(INIT_FC_ZP)
     ) u_params (
         .clk(clk),
         .rst_n(rst_n),
@@ -473,24 +517,27 @@ module mobilenet_v1_top #(
         .conv1_bias_requant_vec(conv1_bias_requant_vec),
         .conv1_shift_vec(conv1_shift_vec),
         .conv1_relu6_max_vec(conv1_relu6_max_vec),
+        .conv1_relu6_min_vec(conv1_relu6_min_vec),
         .dw_weight_flat(dw_weight_flat),
         .dw_mul(dw_mul),
         .dw_bias(dw_bias),
         .dw_shift(dw_shift),
         .dw_relu6_max(dw_relu6_max),
-        .pw_weight(pw_weight),
-        .pw_bias_acc(pw_bias_acc),
-        .pw_mul(pw_mul),
-        .pw_bias_requant(pw_bias_requant),
-        .pw_shift(pw_shift),
-        .pw_relu6_max(pw_relu6_max),
+        .dw_relu6_min(dw_relu6_min),
+        .pw_weight_vec(pw_weight_vec),
+        .pw_bias_acc_vec(pw_bias_acc_vec),
+        .pw_mul_vec(pw_mul_vec),
+        .pw_shift_vec(pw_shift_vec),
+        .pw_relu6_max_vec(pw_relu6_max_vec),
+        .pw_relu6_min_vec(pw_relu6_min_vec),
         .gap_mul(gap_mul),
         .gap_bias(gap_bias),
         .gap_shift(gap_shift),
         .fc_weight(fc_weight),
         .fc_mul(fc_mul),
-        .fc_bias(fc_bias),
-        .fc_shift(fc_shift)
+        .fc_bias_acc(fc_bias_acc),
+        .fc_shift(fc_shift),
+        .fc_zp(fc_zp)
     );
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -544,31 +591,37 @@ module mobilenet_v1_top #(
     always_comb begin
         fm_rd_en = 1'b0;
         fm_rd_addr = '0;
-        fm_wr_en = 1'b0;
-        fm_wr_addr = '0;
-        fm_wr_data = '0;
+        fm_wr_en0 = 1'b0;
+        fm_wr_addr0 = '0;
+        fm_wr_data0 = '0;
+        fm_wr_en1 = 1'b0;
+        fm_wr_addr1 = '0;
+        fm_wr_data1 = '0;
 
         case (top_state)
             TOP_CORE: begin
                 fm_rd_en = layer_is_conv1 ? conv1_in_rd_en : dws_in_rd_en;
                 fm_rd_addr = layer_is_conv1 ? conv1_in_rd_addr : dws_in_rd_addr;
-                fm_wr_en = layer_is_conv1 ? conv1_out_wr_en : dws_out_wr_en;
-                fm_wr_addr = layer_is_conv1 ? conv1_out_wr_addr : dws_out_wr_addr;
-                fm_wr_data = layer_is_conv1 ? conv1_out_wr_data : dws_out_wr_data;
+                fm_wr_en0 = layer_is_conv1 ? conv1_out_wr_en : dws_out_wr_en0;
+                fm_wr_addr0 = layer_is_conv1 ? conv1_out_wr_addr : dws_out_wr_addr0;
+                fm_wr_data0 = layer_is_conv1 ? conv1_out_wr_data : dws_out_wr_data0;
+                fm_wr_en1 = layer_is_conv1 ? 1'b0 : dws_out_wr_en1;
+                fm_wr_addr1 = layer_is_conv1 ? '0 : dws_out_wr_addr1;
+                fm_wr_data1 = layer_is_conv1 ? '0 : dws_out_wr_data1;
             end
             TOP_GAP: begin
                 fm_rd_en = gap_in_rd_en;
                 fm_rd_addr = gap_in_rd_addr;
-                fm_wr_en = gap_out_wr_en;
-                fm_wr_addr = gap_out_wr_addr;
-                fm_wr_data = gap_out_wr_data;
+                fm_wr_en0 = gap_out_wr_en;
+                fm_wr_addr0 = gap_out_wr_addr;
+                fm_wr_data0 = gap_out_wr_data;
             end
             TOP_FC: begin
                 fm_rd_en = fc_in_rd_en;
                 fm_rd_addr = fc_in_rd_addr;
-                fm_wr_en = fc_out_wr_en;
-                fm_wr_addr = fc_out_wr_addr;
-                fm_wr_data = fc_out_wr_data;
+                fm_wr_en0 = fc_out_wr_en;
+                fm_wr_addr0 = fc_out_wr_addr;
+                fm_wr_data0 = fc_out_wr_data;
             end
             default: begin
             end

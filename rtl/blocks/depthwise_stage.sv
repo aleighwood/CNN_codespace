@@ -3,7 +3,7 @@ module depthwise_stage #(
     parameter int ACC_W = 32,
     parameter int MAX_IMG_W = 224,
     parameter int MAX_IMG_H = 224,
-    parameter int MUL_W = 16,
+    parameter int MUL_W = 32,
     parameter int BIAS_W = 32,
     parameter int SHIFT_W = 6
 ) (
@@ -21,9 +21,10 @@ module depthwise_stage #(
 
     input  logic signed [DATA_W*9-1:0] dw_weight_flat,
     input  logic signed [MUL_W-1:0] dw_mul,
-    input  logic signed [BIAS_W-1:0] dw_bias,
+    input  logic signed [ACC_W-1:0] dw_bias_acc,
     input  logic [SHIFT_W-1:0] dw_shift,
     input  logic signed [DATA_W-1:0] dw_relu6_max,
+    input  logic signed [DATA_W-1:0] dw_relu6_min,
 
     output logic out_valid,
     input  logic out_ready,
@@ -36,6 +37,7 @@ module depthwise_stage #(
     logic dw_valid;
     logic dw_ready;
     logic signed [ACC_W-1:0] dw_acc;
+    logic signed [ACC_W-1:0] dw_acc_bias;
 
     line_buffer_3x3 #(
         .DATA_W(DATA_W),
@@ -73,21 +75,22 @@ module depthwise_stage #(
         .out_acc(dw_acc)
     );
 
-    requant_relu6 #(
+    assign dw_acc_bias = dw_acc + dw_bias_acc;
+
+    requant_q31 #(
         .DATA_W(DATA_W),
         .ACC_W(ACC_W),
         .MUL_W(MUL_W),
-        .BIAS_W(BIAS_W),
         .SHIFT_W(SHIFT_W)
     ) u_requant (
         .clk(clk),
         .rst_n(rst_n),
         .in_valid(dw_valid),
         .in_ready(dw_ready),
-        .in_acc(dw_acc),
-        .mul(dw_mul),
-        .bias(dw_bias),
+        .in_acc(dw_acc_bias),
+        .mul_q31(dw_mul),
         .shift(dw_shift),
+        .zp_out(dw_relu6_min),
         .relu6_max(dw_relu6_max),
         .relu6_en(1'b1),
         .out_valid(out_valid),

@@ -1,7 +1,7 @@
 module conv1_tile_runner #(
     parameter int DATA_W = 8,
     parameter int ACC_W = 32,
-    parameter int MUL_W = 16,
+    parameter int MUL_W = 32,
     parameter int BIAS_W = 32,
     parameter int SHIFT_W = 6,
     parameter int ADDR_W = 32,
@@ -10,7 +10,7 @@ module conv1_tile_runner #(
     parameter int MAX_TILE_IN_H = 33,
     parameter int MAX_TILE_OUT_W = 16,
     parameter int MAX_TILE_OUT_H = 16,
-    parameter int OC_PAR = 4,
+    parameter int OC_PAR = 16,
     parameter int STRIDE = 2
 ) (
     input  logic clk,
@@ -35,6 +35,7 @@ module conv1_tile_runner #(
     input  logic [DIM_W-1:0] cfg_in_channels,
     input  logic [DIM_W-1:0] cfg_out_channels,
     input  logic [DIM_W-1:0] cfg_stride,
+    input  logic signed [DATA_W-1:0] cfg_pad_value,
 
     input  logic [ADDR_W-1:0] cfg_in_base_addr,
     input  logic [ADDR_W-1:0] cfg_out_base_addr,
@@ -53,6 +54,7 @@ module conv1_tile_runner #(
     input  logic signed [OC_PAR*BIAS_W-1:0] bias_requant_vec,
     input  logic [OC_PAR*SHIFT_W-1:0] shift_vec,
     input  logic signed [OC_PAR*DATA_W-1:0] relu6_max_vec,
+    input  logic signed [OC_PAR*DATA_W-1:0] relu6_min_vec,
 
     output logic [DIM_W-1:0] ic_idx,
     output logic [DIM_W-1:0] oc_group_idx
@@ -87,6 +89,7 @@ module conv1_tile_runner #(
     logic [DIM_W-1:0] in_channels_reg;
     logic [DIM_W-1:0] out_channels_reg;
     logic [DIM_W-1:0] stride_reg;
+    logic signed [DATA_W-1:0] pad_value_reg;
     logic [ADDR_W-1:0] in_base_addr_reg;
     logic [ADDR_W-1:0] out_base_addr_reg;
 
@@ -177,6 +180,7 @@ module conv1_tile_runner #(
         .cfg_tile_in_col(tile_in_col_reg),
         .cfg_tile_in_h(tile_in_h_reg),
         .cfg_tile_in_w(tile_in_w_reg),
+        .cfg_pad_value(pad_value_reg),
         .rd_en(in_rd_en),
         .rd_addr(in_rd_addr),
         .rd_data(in_rd_data),
@@ -401,11 +405,10 @@ module conv1_tile_runner #(
     end
     assign oc_out_idx = oc_idx_in_group;
 
-    requant_relu6 #(
+    requant_q31 #(
         .DATA_W(DATA_W),
         .ACC_W(ACC_W),
         .MUL_W(MUL_W),
-        .BIAS_W(BIAS_W),
         .SHIFT_W(SHIFT_W)
     ) u_requant (
         .clk(clk),
@@ -413,9 +416,9 @@ module conv1_tile_runner #(
         .in_valid(out_stream_valid),
         .in_ready(rq_in_ready),
         .in_acc(psum_read),
-        .mul(mul_vec[oc_out_idx*MUL_W +: MUL_W]),
-        .bias(bias_requant_vec[oc_out_idx*BIAS_W +: BIAS_W]),
+        .mul_q31(mul_vec[oc_out_idx*MUL_W +: MUL_W]),
         .shift(shift_vec[oc_out_idx*SHIFT_W +: SHIFT_W]),
+        .zp_out(relu6_min_vec[oc_out_idx*DATA_W +: DATA_W]),
         .relu6_max(relu6_max_vec[oc_out_idx*DATA_W +: DATA_W]),
         .relu6_en(1'b1),
         .out_valid(rq_valid),
@@ -480,6 +483,7 @@ module conv1_tile_runner #(
                 in_channels_reg <= cfg_in_channels;
                 out_channels_reg <= cfg_out_channels;
                 stride_reg <= cfg_stride;
+                pad_value_reg <= cfg_pad_value;
                 in_base_addr_reg <= cfg_in_base_addr;
                 out_base_addr_reg <= cfg_out_base_addr;
 

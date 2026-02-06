@@ -1,7 +1,7 @@
 module fc_runner #(
     parameter int DATA_W = 8,
     parameter int ACC_W = 32,
-    parameter int MUL_W = 16,
+    parameter int MUL_W = 32,
     parameter int BIAS_W = 32,
     parameter int SHIFT_W = 6,
     parameter int ADDR_W = 32,
@@ -32,8 +32,9 @@ module fc_runner #(
     output logic [DIM_W-1:0] fc_out_idx,
     input  logic signed [DATA_W-1:0] fc_weight,
     input  logic signed [MUL_W-1:0] fc_mul,
-    input  logic signed [BIAS_W-1:0] fc_bias,
-    input  logic [SHIFT_W-1:0] fc_shift
+    input  logic signed [ACC_W-1:0] fc_bias_acc,
+    input  logic [SHIFT_W-1:0] fc_shift,
+    input  logic signed [DATA_W-1:0] fc_zp
 );
     typedef enum logic [2:0] {
         S_IDLE,
@@ -64,11 +65,10 @@ module fc_runner #(
 
     assign busy = (state != S_IDLE);
 
-    requant_relu6 #(
+    requant_q31 #(
         .DATA_W(DATA_W),
         .ACC_W(ACC_W),
         .MUL_W(MUL_W),
-        .BIAS_W(BIAS_W),
         .SHIFT_W(SHIFT_W)
     ) u_requant (
         .clk(clk),
@@ -76,9 +76,9 @@ module fc_runner #(
         .in_valid(rq_in_valid),
         .in_ready(rq_in_ready),
         .in_acc(acc),
-        .mul(fc_mul),
-        .bias(fc_bias),
+        .mul_q31(fc_mul),
         .shift(fc_shift),
+        .zp_out(fc_zp),
         .relu6_max({DATA_W{1'b1}}),
         .relu6_en(1'b0),
         .out_valid(rq_out_valid),
@@ -128,7 +128,11 @@ module fc_runner #(
                     end
                 end
                 S_ACCUM: begin
-                    acc <= acc + (in_buf[fc_in_idx] * fc_weight);
+                    if (fc_in_idx == '0) begin
+                        acc <= fc_bias_acc + (in_buf[fc_in_idx] * fc_weight);
+                    end else begin
+                        acc <= acc + (in_buf[fc_in_idx] * fc_weight);
+                    end
                     if (fc_in_idx == in_c_reg - 1'b1) begin
                         fc_in_idx <= '0;
                         state <= S_QUANT;

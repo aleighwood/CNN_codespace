@@ -3,7 +3,7 @@ module dws_block #(
     parameter int ACC_W = 32,
     parameter int MAX_IMG_W = 224,
     parameter int MAX_IMG_H = 224,
-    parameter int MUL_W = 16,
+    parameter int MUL_W = 32,
     parameter int BIAS_W = 32,
     parameter int SHIFT_W = 6
 ) (
@@ -21,9 +21,10 @@ module dws_block #(
 
     input  logic signed [DATA_W*9-1:0] dw_weight_flat,
     input  logic signed [MUL_W-1:0] dw_mul,
-    input  logic signed [BIAS_W-1:0] dw_bias,
+    input  logic signed [ACC_W-1:0] dw_bias_acc,
     input  logic [SHIFT_W-1:0] dw_shift,
     input  logic signed [DATA_W-1:0] dw_relu6_max,
+    input  logic signed [DATA_W-1:0] dw_relu6_min,
 
     output logic dw_out_valid,
     input  logic dw_out_ready,
@@ -41,6 +42,7 @@ module dws_block #(
     input  logic signed [BIAS_W-1:0] pw_bias_requant,
     input  logic [SHIFT_W-1:0] pw_shift,
     input  logic signed [DATA_W-1:0] pw_relu6_max,
+    input  logic signed [DATA_W-1:0] pw_relu6_min,
 
     output logic pw_out_valid,
     input  logic pw_out_ready,
@@ -70,9 +72,10 @@ module dws_block #(
         .cfg_stride(dw_cfg_stride),
         .dw_weight_flat(dw_weight_flat),
         .dw_mul(dw_mul),
-        .dw_bias(dw_bias),
+        .dw_bias_acc(dw_bias_acc),
         .dw_shift(dw_shift),
         .dw_relu6_max(dw_relu6_max),
+        .dw_relu6_min(dw_relu6_min),
         .out_valid(dw_out_valid),
         .out_ready(dw_out_ready),
         .out_data(dw_out_data)
@@ -96,11 +99,10 @@ module dws_block #(
         .out_acc(pw_acc)
     );
 
-    requant_relu6 #(
+    requant_q31 #(
         .DATA_W(DATA_W),
         .ACC_W(ACC_W),
         .MUL_W(MUL_W),
-        .BIAS_W(BIAS_W),
         .SHIFT_W(SHIFT_W)
     ) u_pw_requant (
         .clk(clk),
@@ -108,9 +110,9 @@ module dws_block #(
         .in_valid(pw_acc_valid),
         .in_ready(pw_acc_ready),
         .in_acc(pw_acc),
-        .mul(pw_mul),
-        .bias(pw_bias_requant),
+        .mul_q31(pw_mul),
         .shift(pw_shift),
+        .zp_out(pw_relu6_min),
         .relu6_max(pw_relu6_max),
         .relu6_en(1'b1),
         .out_valid(pw_out_valid),

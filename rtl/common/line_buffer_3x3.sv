@@ -87,8 +87,8 @@ module line_buffer_3x3 #(
                 row2_shift0 <= '0;
                 row2_shift1 <= '0;
                 for (i = 0; i < MAX_IMG_W; i = i + 1) begin
-                    line1_mem[i] <= '0;
-                    line2_mem[i] <= '0;
+                    line1_mem[i] = '0;
+                    line2_mem[i] = '0;
                 end
             end
 

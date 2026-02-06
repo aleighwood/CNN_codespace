@@ -15,6 +15,7 @@ module tile_reader #(
     input  logic signed [DIM_W:0] cfg_tile_in_col,
     input  logic [DIM_W-1:0] cfg_tile_in_h,
     input  logic [DIM_W-1:0] cfg_tile_in_w,
+    input  logic signed [DATA_W-1:0] cfg_pad_value,
 
     output logic rd_en,
     output logic [ADDR_W-1:0] rd_addr,
@@ -35,12 +36,13 @@ module tile_reader #(
     logic signed [DIM_W:0] tile_in_col_reg;
     logic [DIM_W-1:0] tile_in_h_reg;
     logic [DIM_W-1:0] tile_in_w_reg;
+    logic signed [DATA_W-1:0] pad_value_reg;
 
     logic [DIM_W-1:0] row_idx;
     logic [DIM_W-1:0] col_idx;
 
     logic req_valid;
-    logic pending_zero;
+    logic pending_pad;
     logic pending_last;
 
     logic [DATA_W-1:0] out_data_reg;
@@ -90,10 +92,11 @@ module tile_reader #(
             tile_in_col_reg <= '0;
             tile_in_h_reg <= '0;
             tile_in_w_reg <= '0;
+            pad_value_reg <= '0;
             row_idx <= '0;
             col_idx <= '0;
             req_valid <= 1'b0;
-            pending_zero <= 1'b0;
+            pending_pad <= 1'b0;
             pending_last <= 1'b0;
             out_valid_reg <= 1'b0;
             out_data_reg <= '0;
@@ -114,6 +117,7 @@ module tile_reader #(
                 tile_in_col_reg <= cfg_tile_in_col;
                 tile_in_h_reg <= cfg_tile_in_h;
                 tile_in_w_reg <= cfg_tile_in_w;
+                pad_value_reg <= cfg_pad_value;
                 row_idx <= '0;
                 col_idx <= '0;
                 req_valid <= 1'b0;
@@ -132,14 +136,14 @@ module tile_reader #(
             if (req_valid) begin
                 if (!out_valid_reg) begin
                     out_valid_reg <= 1'b1;
-                    out_data_reg <= pending_zero ? '0 : rd_data;
+                    out_data_reg <= pending_pad ? pad_value_reg : rd_data;
                     out_last_reg <= pending_last;
                     req_valid <= 1'b0;
                 end
             end
 
             if (issue_req) begin
-                pending_zero <= !in_bounds;
+                pending_pad <= !in_bounds;
                 pending_last <= last_pixel;
                 req_valid <= 1'b1;
 

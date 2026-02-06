@@ -1,7 +1,7 @@
 module requant_relu6 #(
     parameter int DATA_W = 8,
     parameter int ACC_W = 32,
-    parameter int MUL_W = 16,
+    parameter int MUL_W = 32,
     parameter int BIAS_W = 32,
     parameter int SHIFT_W = 6
 ) (

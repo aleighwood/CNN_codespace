@@ -54,6 +54,13 @@ module mobilenet_v1_ctrl #(
     localparam int KERNEL = 3;
     localparam int PAD = 1;
 
+    function automatic int ceil_div(input int a, input int b);
+        if (b <= 0) begin
+            return 0;
+        end
+        return (a + b - 1) / b;
+    endfunction
+
     typedef enum logic [2:0] {
         S_IDLE,
         S_CFG,
@@ -193,8 +200,8 @@ module mobilenet_v1_ctrl #(
 
             if (state == S_CFG) begin
                 cur_out_c <= next_out_c;
-                cur_out_h <= (cur_in_h + (PAD << 1) - KERNEL) / stride_reg + 1'b1;
-                cur_out_w <= (cur_in_w + (PAD << 1) - KERNEL) / stride_reg + 1'b1;
+                cur_out_h <= ceil_div(cur_in_h, stride_reg);
+                cur_out_w <= ceil_div(cur_in_w, stride_reg);
 
                 if (tile_cfg_ready) begin
                     tile_cfg_valid <= 1'b1;
