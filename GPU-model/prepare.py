@@ -118,7 +118,7 @@ def download_imagenet_val(output_dir='imagenet_val'):
     total = len(ds)
     for i, sample in enumerate(ds):
         label = sample["label"]
-        class_dir = os.path.join(output_dir, str(label))
+        class_dir = os.path.join(output_dir, f"{label:04d}")
         os.makedirs(class_dir, exist_ok=True)
 
         img = sample["image"]

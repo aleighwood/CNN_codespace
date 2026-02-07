@@ -129,7 +129,9 @@ if __name__ == '__main__':
     data_dir = 'imagenet_val'
     batch_size = 64
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available()
+                          else 'mps' if torch.backends.mps.is_available()
+                          else 'cpu')
     print(f"Using device: {device}")
 
     # 1. Load model with pretrained weights
