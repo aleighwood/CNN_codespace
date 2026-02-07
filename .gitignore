@@ -18,3 +18,8 @@ ENV/
 # Environment files
 environment.yml
 requirements.txt
+
+# GPU-model large folders
+GPU-model/imagenet_val/
+GPU-model/pytorch/
+GPU-model/*.pth
