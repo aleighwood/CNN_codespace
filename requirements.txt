@@ -1,5 +1,8 @@
 numpy
 tensorflow
+tensorflow-datasets
 jupyter
 matplotlib
 pytest
+opencv-python
+transparent_background
