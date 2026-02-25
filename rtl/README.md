@@ -6,13 +6,13 @@ Overview
 - `line_buffer_3x3` supports a `start` pulse to reset its internal counters between tiles.
 - `rtl/common/dw_conv_3x3.sv`: 9x MAC for a single channel window.
 - `rtl/common/conv3x3_mac_vec.sv`: Vectorized 3x3 MAC for multiple output channels in parallel.
-- `rtl/common/requant_relu6.sv`: Per-layer scale and bias with optional ReLU6 clamp.
+- `rtl/common/requant_q31.sv`: Q31 requantization (SRDHM + RoundingDivideByPOT) with optional ReLU6 clamp.
 - `rtl/common/tile_buf.sv`: Simple sync RAM wrapper for tile storage.
 - `rtl/blocks/depthwise_stage.sv`: line buffer + depthwise conv + requant.
 - `rtl/blocks/pw_conv_1x1.sv`: Serial 1x1 dot-product across input channels.
 - `rtl/blocks/dws_block.sv`: Skeleton wrapper that exposes depthwise and pointwise stages; tile buffer sits between them.
 - `rtl/blocks/tile_ctrl.sv`: On-the-fly tile iterator that emits input/output tile origins and sizes.
-- `rtl/blocks/tile_reader.sv`: Streams a single-channel input tile from flat memory, injecting zeros for padding.
+- `rtl/blocks/tile_reader.sv`: Streams a single-channel input tile from flat memory, injecting `cfg_pad_value` for padding.
 - `rtl/blocks/tile_writer.sv`: Writes a single-channel output tile into flat memory.
 - `rtl/blocks/pw_tile_reader.sv`: Reads a depthwise tile in channel-major order for pointwise accumulation and exposes input-channel index.
 - `rtl/blocks/dws_tile_runner.sv`: Coordinates per-tile depthwise and pointwise phases with external memory interfaces.
@@ -33,8 +33,8 @@ Tiling model (tile buffering)
 - Input/output feature maps are assumed to be planar (channel-major) with base addresses per channel.
 
 Quantization notes
-- Typical flow: int8 inputs and weights, int32 accumulation, requant with per-layer `mul` and `shift`.
-- ReLU6 clamp uses `relu6_max = floor(6 / scale_out)` in output quant units.
+- Typical flow: int8 inputs/weights → int32 accumulation → Q31 requant (`mul_q31` + right shift).
+- ReLU6 clamp uses `relu6_min = zp_out` and `relu6_max = round(6 / scale_out) + zp_out` in output quant units.
 
 MobileNet v1 mapping
 - The layer ordering and depthwise block strides match `MobileNet_np.py` and `DEPTHWISE_BLOCK_SPECS`.
@@ -46,10 +46,11 @@ MobileNet v1 mapping
 
 Parameter cache write selects (`param_wr_sel`)
 - 0: conv1 weights, 1: conv1 bias_acc, 2: conv1 mul, 3: conv1 bias_requant, 4: conv1 shift, 5: conv1 relu6_max
-- 6: depthwise weights, 7: depthwise mul, 8: depthwise bias, 9: depthwise shift, 10: depthwise relu6_max
+- 6: depthwise weights, 7: depthwise mul, 8: depthwise bias_acc, 9: depthwise shift, 10: depthwise relu6_max
 - 11: pointwise weights, 12: pointwise bias_acc, 13: pointwise mul, 14: pointwise bias_requant, 15: pointwise shift, 16: pointwise relu6_max
 - 17: gap mul, 18: gap bias, 19: gap shift
-- 20: fc weights, 21: fc mul, 22: fc bias, 23: fc shift
+- 20: fc weights, 21: fc mul, 22: fc bias_acc, 23: fc shift
+- 24: conv1 relu6_min, 25: depthwise relu6_min, 26: pointwise relu6_min, 27: fc zp
 - `mobilenet_v1_top` exposes `param_wr_*` signals (5-bit `param_wr_sel`) to load the parameter cache before running.
 - Pointwise weights are cached in groups (`PW_GROUP`) and `dws_tile_runner` waits for `pw_group_ready` before each group.
 - Use the `INIT_*` parameters on `mobilenet_v1_param_cache` to pre-initialize ROMs for bitstream builds.
@@ -59,13 +60,14 @@ ROM init workflow (hex, one file per array)
 - Run: `python export_mobilenet_int8_mem.py --weights mobilenet_imagenet.weights.h5 --output-dir rtl/mem`
 - Pass these filenames into `mobilenet_v1_param_cache` via `INIT_*` parameters:
   - conv1: `conv1_weight.mem`, `conv1_bias_acc.mem`, `conv1_mul.mem`, `conv1_bias_rq.mem`, `conv1_shift.mem`, `conv1_relu6.mem`
-  - depthwise: `dw_weight.mem`, `dw_mul.mem`, `dw_bias.mem`, `dw_shift.mem`, `dw_relu6.mem`
-  - pointwise: `pw_weight.mem`, `pw_bias_acc.mem`, `pw_mul.mem`, `pw_bias_rq.mem`, `pw_shift.mem`, `pw_relu6.mem`
+  - conv1: `conv1_weight.mem`, `conv1_bias_acc.mem`, `conv1_mul.mem`, `conv1_bias_rq.mem`, `conv1_shift.mem`, `conv1_relu6.mem`, `conv1_relu6_min.mem`
+  - depthwise: `dw_weight.mem`, `dw_mul.mem`, `dw_bias_acc.mem`, `dw_shift.mem`, `dw_relu6.mem`, `dw_relu6_min.mem`
+  - pointwise: `pw_weight.mem`, `pw_bias_acc.mem`, `pw_mul.mem`, `pw_bias_rq.mem`, `pw_shift.mem`, `pw_relu6.mem`, `pw_relu6_min.mem`
   - gap: `gap_mul.mem`, `gap_bias.mem`, `gap_shift.mem`
-  - fc: `fc_weight.mem`, `fc_mul.mem`, `fc_bias.mem`, `fc_shift.mem`
+  - fc: `fc_weight.mem`, `fc_mul.mem`, `fc_bias_acc.mem`, `fc_shift.mem`, `fc_zp.mem`
 
 Quantization assumptions in exporter
-- Symmetric int8 weights/activations (zero-point = 0).
-- ReLU6 outputs use `scale = 6/127` by default; input scale defaults to `1/127` (assumes input normalized to [-1,1]).
+- Per-channel symmetric int8 weights with per-tensor activation scales/zero-points from TFLite.
+- ReLU6 outputs use `relu6_min = zp_out` and `relu6_max = round(6 / scale_out) + zp_out`.
 - BN is fused into weights and bias before quantization.
-- Bias is applied in requant (`bias_rq`); accumulator bias terms are set to zero.
+- Bias is applied in the accumulator (`bias_acc`); requant uses `mul_q31` and right shifts.

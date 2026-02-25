@@ -339,6 +339,133 @@ def parse_shape(value):
     return tuple(parts)
 
 
+def parse_roi(value):
+    parts = [float(part.strip()) for part in value.split(",") if part.strip()]
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError("roi must be x,y,w,h")
+    return tuple(parts)
+
+
+def clamp(val, lo, hi):
+    return max(lo, min(hi, val))
+
+
+def align_roi_grid(roi, align, w, h):
+    if align is None or align <= 1:
+        return roi
+    x0, y0, x1, y1 = roi
+    x0 = (x0 // align) * align
+    y0 = (y0 // align) * align
+    x1 = ((x1 + align - 1) // align) * align
+    y1 = ((y1 + align - 1) // align) * align
+    x0 = clamp(x0, 0, w)
+    y0 = clamp(y0, 0, h)
+    x1 = clamp(x1, 0, w)
+    y1 = clamp(y1, 0, h)
+    if x1 <= x0 or y1 <= y0:
+        raise SystemExit(f"Aligned ROI empty: {(x0,y0,x1,y1)}")
+    return x0, y0, x1, y1
+
+
+def map_roi(roi, in_h, in_w, stride, halo):
+    x0, y0, x1, y1 = roi
+    x0 = max(0, x0 - halo)
+    y0 = max(0, y0 - halo)
+    x1 = min(in_w, x1 + halo)
+    y1 = min(in_h, y1 + halo)
+    out_w = (in_w + stride - 1) // stride
+    out_h = (in_h + stride - 1) // stride
+    out_x0 = clamp(x0 // stride, 0, out_w)
+    out_y0 = clamp(y0 // stride, 0, out_h)
+    out_x1 = clamp((x1 + stride - 1) // stride, out_x0, out_w)
+    out_y1 = clamp((y1 + stride - 1) // stride, out_y0, out_h)
+    return out_x0, out_y0, out_x1, out_y1
+
+
+def mask_outside_roi(x, roi):
+    if roi is None:
+        return x
+    x0, y0, x1, y1 = roi
+    out = x.copy()
+    if y0 > 0:
+        out[:y0, :, :] = 0
+    if y1 < out.shape[0]:
+        out[y1:, :, :] = 0
+    if x0 > 0:
+        out[:, :x0, :] = 0
+    if x1 < out.shape[1]:
+        out[:, x1:, :] = 0
+    return out
+
+
+def downsample_mask(mask, stride):
+    if stride == 1:
+        return mask
+    h, w = mask.shape
+    out_h = (h + stride - 1) // stride
+    out_w = (w + stride - 1) // stride
+    pad_h = out_h * stride - h
+    pad_w = out_w * stride - w
+    if pad_h or pad_w:
+        mask = np.pad(mask, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
+    reshaped = mask.reshape(out_h, stride, out_w, stride)
+    return reshaped.max(axis=(1, 3)).astype(np.uint8)
+
+
+def tile_mask(mask, tile):
+    h, w = mask.shape
+    out_h = (h + tile - 1) // tile
+    out_w = (w + tile - 1) // tile
+    pad_h = out_h * tile - h
+    pad_w = out_w * tile - w
+    if pad_h or pad_w:
+        mask = np.pad(mask, ((0, pad_h), (0, pad_w)), mode="constant", constant_values=0)
+    reshaped = mask.reshape(out_h, tile, out_w, tile)
+    return reshaped.max(axis=(1, 3)).astype(np.uint8)
+
+
+def expand_tile_mask(tmask, out_h, out_w, tile):
+    expanded = np.repeat(np.repeat(tmask, tile, axis=0), tile, axis=1)
+    return expanded[:out_h, :out_w]
+
+
+def dilate_tiles(tmask, halo_tiles):
+    if halo_tiles <= 0:
+        return tmask
+    k = 2 * halo_tiles + 1
+    pad = k // 2
+    padded = np.pad(tmask, pad, mode="constant", constant_values=0)
+    out = np.zeros_like(tmask)
+    h, w = tmask.shape
+    for y in range(h):
+        for x in range(w):
+            if np.any(padded[y : y + k, x : x + k]):
+                out[y, x] = 1
+    return out
+
+
+def layer_halo_px(layer_idx, args):
+    halo = int(args.roi_halo)
+    if args.roi_halo_tiles and args.roi_halo_layers:
+        if layer_idx <= args.roi_halo_layers:
+            halo = max(halo, int(args.roi_halo_tiles) * int(args.tile_size))
+    return halo
+
+
+def gap_int8_q31_roi(x, mul_q31, shift_q31, roi):
+    if roi is None:
+        return gap_int8_q31(x, mul_q31, shift_q31)
+    x0, y0, x1, y1 = roi
+    if x1 <= x0 or y1 <= y0:
+        raise SystemExit(f"ROI empty at GAP: {roi} for shape {x.shape}")
+    roi_x = x[y0:y1, x0:x1, :]
+    acc = roi_x.astype(np.int32).sum(axis=(0, 1))
+    acc64 = acc.astype(np.int64)
+    scaled = multiply_by_quantized_multiplier(acc64, np.int64(mul_q31), int(shift_q31))
+    scaled = np.clip(scaled, -128, 127)
+    return scaled.astype(np.int8)
+
+
 def get_scale_zp(detail):
     scale, zp = detail.get("quantization", (0.0, 0))
     if isinstance(scale, (list, tuple, np.ndarray)):
@@ -496,6 +623,16 @@ def main():
     parser.add_argument("--dump-dw-mem", type=str, default="")
     parser.add_argument("--tflite", type=str, default="", help="TFLite model for Q31 quantization params.")
     parser.add_argument("--q31", action="store_true", help="Use Q31 multipliers and TFLite quantization math.")
+    parser.add_argument("--roi", type=parse_roi, default=None, help="ROI x,y,w,h in input pixels.")
+    parser.add_argument("--roi-normalized", action="store_true", help="Interpret --roi as normalized (0..1).")
+    parser.add_argument("--roi-margin", type=float, default=0.0, help="Expand ROI by this fraction per side.")
+    parser.add_argument("--roi-halo", type=int, default=1, help="Halo (pixels) per conv layer when mapping ROI.")
+    parser.add_argument("--roi-skip", action="store_true", help="Zero outputs outside ROI each layer (tile-skip mode).")
+    parser.add_argument("--roi-align", type=int, default=0, help="Align ROI to this pixel grid (e.g., 16).")
+    parser.add_argument("--roi-halo-tiles", type=int, default=0, help="Halo in tiles for early layers.")
+    parser.add_argument("--roi-halo-layers", type=int, default=0, help="Apply tile halo for first N layers.")
+    parser.add_argument("--tile-size", type=int, default=16, help="Tile size in pixels for ROI halo (default 16).")
+    parser.add_argument("--roi-mask-npy", type=str, default="", help="Optional ROI bitmap mask (.npy) at input size.")
     args = parser.parse_args()
 
     h, w, c = args.input_shape
@@ -517,6 +654,41 @@ def main():
             for col in range(w):
                 input_vals.append(x_q[r, col, ch])
     write_mem8(args.input_mem, input_vals)
+
+    roi = None
+    mask = None
+    if args.roi is not None:
+        rx, ry, rw, rh = args.roi
+        if args.roi_normalized:
+            rx *= w
+            ry *= h
+            rw *= w
+            rh *= h
+        if rw <= 0 or rh <= 0:
+            raise SystemExit("ROI width/height must be > 0.")
+        margin = max(0.0, float(args.roi_margin))
+        rx -= rw * margin
+        ry -= rh * margin
+        rw *= (1.0 + 2.0 * margin)
+        rh *= (1.0 + 2.0 * margin)
+        x0 = clamp(int(round(rx)), 0, w)
+        y0 = clamp(int(round(ry)), 0, h)
+        x1 = clamp(int(round(rx + rw)), 0, w)
+        y1 = clamp(int(round(ry + rh)), 0, h)
+        if args.roi_align and args.roi_align > 1:
+            x0, y0, x1, y1 = align_roi_grid((x0, y0, x1, y1), args.roi_align, w, h)
+        if x1 <= x0 or y1 <= y0:
+            raise SystemExit(f"ROI empty after clamp: {(x0,y0,x1,y1)}")
+        roi = (x0, y0, x1, y1)
+        print(f"ROI input: {roi} (HxW={h}x{w})")
+
+    if args.roi_mask_npy:
+        mask = np.load(args.roi_mask_npy)
+        if mask.ndim == 3:
+            mask = mask[:, :, 0]
+        if mask.shape[0] != h or mask.shape[1] != w:
+            raise SystemExit(f"ROI mask shape {mask.shape} != input {(h,w)}")
+        mask = (mask > 0).astype(np.uint8)
 
     # Load params from mem files (matches RTL ROMs).
     mem = args.mem_dir
@@ -595,6 +767,19 @@ def main():
             pad=1,
         )
     write_tensor_chw(os.path.join(mem, "layer0_out_exp.mem"), x)
+    if roi is not None:
+        halo_px = layer_halo_px(0, args)
+        roi = map_roi(roi, h, w, stride=2, halo=halo_px)
+        print(f"ROI after conv1: {roi} (out {x.shape[0]}x{x.shape[1]})")
+        if args.roi_skip and mask is None:
+            x = mask_outside_roi(x, roi)
+    if mask is not None:
+        mask = downsample_mask(mask, 2)
+        tmask = tile_mask(mask, args.tile_size)
+        if args.roi_halo_tiles and args.roi_halo_layers:
+            tmask = dilate_tiles(tmask, args.roi_halo_tiles)
+        keep = expand_tile_mask(tmask, x.shape[0], x.shape[1], args.tile_size)
+        x[keep == 0] = 0
 
     # Depthwise + Pointwise blocks (MobileNet v1)
     specs = [
@@ -625,6 +810,7 @@ def main():
 
     for layer_id, (pw_filters, stride) in enumerate(specs, start=1):
         in_c = x.shape[2]
+        x_in = x
         # Depthwise
         dw_k = np.zeros((in_c, 3, 3), dtype=np.int8)
         for ch in range(in_c):
@@ -655,6 +841,10 @@ def main():
                 stride=stride,
                 pad=1,
             )
+        if roi is not None:
+            halo_px = layer_halo_px(layer_id, args)
+            roi = map_roi(roi, x_in.shape[0], x_in.shape[1], stride=stride, halo=halo_px)
+            print(f"ROI after dw{layer_id}: {roi} (out {x.shape[0]}x{x.shape[1]})")
         if dw_dump_path and layer_id == args.dump_dw_layer:
             write_tensor_chw(dw_dump_path, x)
         dw_ch_off += in_c
@@ -687,12 +877,28 @@ def main():
         pw_w_off += pw_count
         pw_out_off += pw_filters
         write_tensor_chw(os.path.join(mem, f"layer{layer_id}_out_exp.mem"), x)
+        if args.roi_skip and roi is not None and mask is None:
+            x = mask_outside_roi(x, roi)
+        if mask is not None:
+            if stride == 2:
+                mask = downsample_mask(mask, 2)
+            tmask = tile_mask(mask, args.tile_size)
+            if args.roi_halo_tiles and args.roi_halo_layers and layer_id <= args.roi_halo_layers:
+                tmask = dilate_tiles(tmask, args.roi_halo_tiles)
+            keep = expand_tile_mask(tmask, x.shape[0], x.shape[1], args.tile_size)
+            x[keep == 0] = 0
 
     # GAP
     if use_q31:
-        gap_scale = 1.0 / (x.shape[0] * x.shape[1])
+        roi_for_gap = roi if (roi is not None and mask is None) else None
+        if roi_for_gap is not None:
+            roi_w = max(1, roi_for_gap[2] - roi_for_gap[0])
+            roi_h = max(1, roi_for_gap[3] - roi_for_gap[1])
+            gap_scale = 1.0 / (roi_w * roi_h)
+        else:
+            gap_scale = 1.0 / (x.shape[0] * x.shape[1])
         qparams["gap"]["mul"], qparams["gap"]["shift"] = quantize_multiplier(gap_scale)
-        gap_out = gap_int8_q31(x, qparams["gap"]["mul"], qparams["gap"]["shift"])
+        gap_out = gap_int8_q31_roi(x, qparams["gap"]["mul"], qparams["gap"]["shift"], roi_for_gap)
     else:
         gap_out = gap_int8(x, gap_mul[: x.shape[2]], gap_bias[: x.shape[2]], gap_shift[: x.shape[2]])
     write_mem8(os.path.join(mem, "gap_out_exp.mem"), gap_out)
