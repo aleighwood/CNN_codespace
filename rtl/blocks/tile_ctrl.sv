@@ -26,6 +26,9 @@ module tile_ctrl #(
     output logic signed [DIM_W:0] tile_in_col,
     output logic [DIM_W-1:0] tile_in_h,
     output logic [DIM_W-1:0] tile_in_w,
+    output logic [DIM_W-1:0] tile_row_idx_out,
+    output logic [DIM_W-1:0] tile_col_idx_out,
+    output logic [DIM_W-1:0] tile_idx,
 
     output logic done
 );
@@ -169,5 +172,8 @@ module tile_ctrl #(
     assign last_tile = (tile_row_idx == tiles_h_reg - 1'b1) &&
                        (tile_col_idx == tiles_w_reg - 1'b1);
 
+    assign tile_row_idx_out = tile_row_idx;
+    assign tile_col_idx_out = tile_col_idx;
+    assign tile_idx = (tile_row_idx * tiles_w_reg) + tile_col_idx;
     assign tile_valid = active;
 endmodule

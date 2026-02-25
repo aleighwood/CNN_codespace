@@ -6,6 +6,8 @@ module mobilenet_v1_top #(
     parameter int SHIFT_W = 6,
     parameter int ADDR_W = 32,
     parameter int DIM_W = 16,
+    parameter int TILE_MASK_ADDR_W = 16,
+    parameter int TILE_MASK_DEPTH = 4096,
     parameter int OC_PAR = 16,
     parameter int PW_GROUP = 32,
     parameter int PW_OC_PAR = 32,
@@ -42,13 +44,16 @@ module mobilenet_v1_top #(
     parameter string INIT_FC_MUL = "",
     parameter string INIT_FC_BIAS = "",
     parameter string INIT_FC_SHIFT = "",
-    parameter string INIT_FC_ZP = ""
+    parameter string INIT_FC_ZP = "",
+    parameter string INIT_TILE_MASK = ""
 ) (
     input  logic clk,
     input  logic rst_n,
 
     input  logic start,
     output logic done,
+
+    input  logic tile_skip_en,
 
     input  logic [DIM_W-1:0] cfg_in_img_h,
     input  logic [DIM_W-1:0] cfg_in_img_w,
@@ -114,6 +119,12 @@ module mobilenet_v1_top #(
     logic [DIM_W-1:0] tile_out_col;
     logic [DIM_W-1:0] tile_out_h;
     logic [DIM_W-1:0] tile_out_w;
+    logic [TILE_MASK_ADDR_W-1:0] tile_mask_addr;
+    logic tile_mask_data;
+
+    logic skip_start;
+    logic skip_active;
+    logic skip_done;
 
     logic [ADDR_W-1:0] in_base_addr;
     logic [ADDR_W-1:0] out_base_addr;
@@ -149,6 +160,13 @@ module mobilenet_v1_top #(
     logic dws_out_wr_en1;
     logic [ADDR_W-1:0] dws_out_wr_addr1;
     logic [DATA_W-1:0] dws_out_wr_data1;
+
+    logic zero_wr_en0;
+    logic [ADDR_W-1:0] zero_wr_addr0;
+    logic [DATA_W-1:0] zero_wr_data0;
+    logic zero_wr_en1;
+    logic [ADDR_W-1:0] zero_wr_addr1;
+    logic [DATA_W-1:0] zero_wr_data1;
 
     logic gap_in_rd_en;
     logic [ADDR_W-1:0] gap_in_rd_addr;
@@ -211,9 +229,12 @@ module mobilenet_v1_top #(
     localparam logic signed [DATA_W-1:0] INPUT_ZP_S = INPUT_ZP;
     localparam logic signed [DATA_W-1:0] ACT_ZP_S = ACT_ZP;
 
+    logic zero_in_two;
+
     mobilenet_v1_ctrl #(
         .DIM_W(DIM_W),
         .ADDR_W(ADDR_W),
+        .MASK_ADDR_W(TILE_MASK_ADDR_W),
         .TILE_H(TILE_H),
         .TILE_W(TILE_W)
     ) u_ctrl (
@@ -222,6 +243,9 @@ module mobilenet_v1_top #(
         .start(core_start),
         .busy(busy),
         .done(core_done),
+        .tile_skip_en(tile_skip_en),
+        .tile_mask_addr(tile_mask_addr),
+        .tile_mask_data(tile_mask_data),
         .cfg_in_img_h(cfg_in_img_h),
         .cfg_in_img_w(cfg_in_img_w),
         .cfg_fm_base0(cfg_fm_base0),
@@ -244,6 +268,9 @@ module mobilenet_v1_top #(
         .tile_out_col(tile_out_col),
         .tile_out_h(tile_out_h),
         .tile_out_w(tile_out_w),
+        .skip_start(skip_start),
+        .skip_active(skip_active),
+        .skip_done(skip_done),
         .in_base_addr(in_base_addr),
         .out_base_addr(out_base_addr),
         .dw_buf_base_addr(dw_buf_base_addr),
@@ -253,6 +280,15 @@ module mobilenet_v1_top #(
         .dws_start(dws_start),
         .dws_busy(dws_busy),
         .dws_done(dws_done)
+    );
+
+    tile_mask_rom #(
+        .ADDR_W(TILE_MASK_ADDR_W),
+        .DEPTH(TILE_MASK_DEPTH),
+        .INIT_FILE(INIT_TILE_MASK)
+    ) u_tile_mask_rom (
+        .addr(tile_mask_addr),
+        .data(tile_mask_data)
     );
 
     conv1_tile_runner #(
@@ -382,6 +418,37 @@ module mobilenet_v1_top #(
         .pw_group_req(pw_group_req),
         .pw_group_idx(pw_group_idx),
         .pw_group_ready(pw_group_ready)
+    );
+
+    assign zero_in_two = layer_is_conv1 ? 1'b0 : 1'b1;
+
+    tile_writer_2x #(
+        .DATA_W(DATA_W),
+        .ADDR_W(ADDR_W),
+        .DIM_W(DIM_W)
+    ) u_zero_writer (
+        .clk(clk),
+        .rst_n(rst_n),
+        .start(skip_start),
+        .cfg_img_h(cur_out_h),
+        .cfg_img_w(cur_out_w),
+        .cfg_base_addr(out_base_addr),
+        .cfg_tile_out_row(tile_out_row),
+        .cfg_tile_out_col(tile_out_col),
+        .cfg_tile_out_h(tile_out_h),
+        .cfg_tile_out_w(tile_out_w),
+        .in_valid(1'b1),
+        .in_two(zero_in_two),
+        .in_ready(),
+        .in_data0('0),
+        .in_data1('0),
+        .wr_en0(zero_wr_en0),
+        .wr_addr0(zero_wr_addr0),
+        .wr_data0(zero_wr_data0),
+        .wr_en1(zero_wr_en1),
+        .wr_addr1(zero_wr_addr1),
+        .wr_data1(zero_wr_data1),
+        .done(skip_done)
     );
 
     gap_runner #(
@@ -600,14 +667,25 @@ module mobilenet_v1_top #(
 
         case (top_state)
             TOP_CORE: begin
-                fm_rd_en = layer_is_conv1 ? conv1_in_rd_en : dws_in_rd_en;
-                fm_rd_addr = layer_is_conv1 ? conv1_in_rd_addr : dws_in_rd_addr;
-                fm_wr_en0 = layer_is_conv1 ? conv1_out_wr_en : dws_out_wr_en0;
-                fm_wr_addr0 = layer_is_conv1 ? conv1_out_wr_addr : dws_out_wr_addr0;
-                fm_wr_data0 = layer_is_conv1 ? conv1_out_wr_data : dws_out_wr_data0;
-                fm_wr_en1 = layer_is_conv1 ? 1'b0 : dws_out_wr_en1;
-                fm_wr_addr1 = layer_is_conv1 ? '0 : dws_out_wr_addr1;
-                fm_wr_data1 = layer_is_conv1 ? '0 : dws_out_wr_data1;
+                if (skip_active) begin
+                    fm_rd_en = 1'b0;
+                    fm_rd_addr = '0;
+                    fm_wr_en0 = zero_wr_en0;
+                    fm_wr_addr0 = zero_wr_addr0;
+                    fm_wr_data0 = zero_wr_data0;
+                    fm_wr_en1 = zero_wr_en1;
+                    fm_wr_addr1 = zero_wr_addr1;
+                    fm_wr_data1 = zero_wr_data1;
+                end else begin
+                    fm_rd_en = layer_is_conv1 ? conv1_in_rd_en : dws_in_rd_en;
+                    fm_rd_addr = layer_is_conv1 ? conv1_in_rd_addr : dws_in_rd_addr;
+                    fm_wr_en0 = layer_is_conv1 ? conv1_out_wr_en : dws_out_wr_en0;
+                    fm_wr_addr0 = layer_is_conv1 ? conv1_out_wr_addr : dws_out_wr_addr0;
+                    fm_wr_data0 = layer_is_conv1 ? conv1_out_wr_data : dws_out_wr_data0;
+                    fm_wr_en1 = layer_is_conv1 ? 1'b0 : dws_out_wr_en1;
+                    fm_wr_addr1 = layer_is_conv1 ? '0 : dws_out_wr_addr1;
+                    fm_wr_data1 = layer_is_conv1 ? '0 : dws_out_wr_data1;
+                end
             end
             TOP_GAP: begin
                 fm_rd_en = gap_in_rd_en;

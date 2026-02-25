@@ -13,18 +13,20 @@ module tb_mobilenet_v1_top;
     localparam int PW_OC_PAR = 32;
     localparam int PW_IC_PAR = 16;
     localparam int FC_OUT_CH = 1000;
-    localparam int TILE_H = 32;
-    localparam int TILE_W = 32;
+    localparam int TILE_H = 16;
+    localparam int TILE_W = 16;
     localparam int INPUT_ZP = -1;
     localparam int ACT_ZP = -128;
     localparam string INPUT_MEM = "rtl/mem/input_rand.mem";
     localparam string FC_OUT_MEM = "rtl/mem/fc_out_hw.mem";
     localparam string FC_LOGITS_MEM = "rtl/mem/fc_logits_hw.mem";
+    localparam string TILE_MASK_MEM = "rtl/mem/tile_mask.mem";
 
     logic clk;
     logic rst_n;
     logic start;
     logic done;
+    logic tile_skip_en;
 
     logic [DIM_W-1:0] cfg_in_img_h;
     logic [DIM_W-1:0] cfg_in_img_w;
@@ -118,6 +120,7 @@ module tb_mobilenet_v1_top;
         .FC_OUT_CH(FC_OUT_CH),
         .TILE_H(TILE_H),
         .TILE_W(TILE_W),
+        .TILE_MASK_DEPTH(4096),
         .INPUT_ZP(INPUT_ZP),
         .ACT_ZP(ACT_ZP),
         .INIT_CONV1_W("rtl/mem/conv1_weight.mem"),
@@ -147,12 +150,14 @@ module tb_mobilenet_v1_top;
         .INIT_FC_MUL("rtl/mem/fc_mul.mem"),
         .INIT_FC_BIAS("rtl/mem/fc_bias_acc.mem"),
         .INIT_FC_SHIFT("rtl/mem/fc_shift.mem"),
-        .INIT_FC_ZP("rtl/mem/fc_zp.mem")
+        .INIT_FC_ZP("rtl/mem/fc_zp.mem"),
+        .INIT_TILE_MASK(TILE_MASK_MEM)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),
         .start(start),
         .done(done),
+        .tile_skip_en(tile_skip_en),
         .cfg_in_img_h(cfg_in_img_h),
         .cfg_in_img_w(cfg_in_img_w),
         .cfg_fm_base0(cfg_fm_base0),
@@ -271,9 +276,13 @@ module tb_mobilenet_v1_top;
         img_w_arg = 16;
         max_cycles = 50000000;
         verbose = 1'b0;
+        tile_skip_en = 1'b0;
         void'($value$plusargs("IMG_H=%d", img_h_arg));
         void'($value$plusargs("IMG_W=%d", img_w_arg));
         void'($value$plusargs("MAX_CYCLES=%d", max_cycles));
+        if ($test$plusargs("TILE_SKIP")) begin
+            tile_skip_en = 1'b1;
+        end
         if ($test$plusargs("VERBOSE")) begin
             verbose = 1'b1;
         end
