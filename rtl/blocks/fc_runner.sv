@@ -6,7 +6,8 @@ module fc_runner #(
     parameter int SHIFT_W = 6,
     parameter int ADDR_W = 32,
     parameter int DIM_W = 16,
-    parameter int MAX_IN_CH = 1024
+    parameter int MAX_IN_CH = 1024,
+    parameter int RD_LATENCY = 0
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -38,6 +39,7 @@ module fc_runner #(
 );
     typedef enum logic [2:0] {
         S_IDLE,
+        S_LOAD_PRIME,
         S_LOAD,
         S_ACCUM,
         S_QUANT,
@@ -54,6 +56,8 @@ module fc_runner #(
     logic [ADDR_W-1:0] out_base_reg;
 
     logic signed [DATA_W-1:0] in_buf [0:MAX_IN_CH-1];
+    logic [DIM_W-1:0] load_pending_idx;
+    logic load_pending_last;
 
     logic signed [ACC_W-1:0] acc;
 
@@ -97,6 +101,8 @@ module fc_runner #(
             out_base_reg <= '0;
             fc_in_idx <= '0;
             fc_out_idx <= '0;
+            load_pending_idx <= '0;
+            load_pending_last <= 1'b0;
             acc <= '0;
             for (i = 0; i < MAX_IN_CH; i = i + 1) begin
                 in_buf[i] = '0;
@@ -113,18 +119,55 @@ module fc_runner #(
                         out_base_reg <= cfg_out_base;
                         fc_in_idx <= '0;
                         fc_out_idx <= '0;
+                        load_pending_idx <= '0;
+                        load_pending_last <= 1'b0;
                         acc <= '0;
+                        state <= S_LOAD_PRIME;
+                    end
+                end
+                S_LOAD_PRIME: begin
+                    if (RD_LATENCY == 0) begin
+                        in_buf[fc_in_idx] <= in_rd_data;
+                        if (fc_in_idx == in_c_reg - 1'b1) begin
+                            fc_in_idx <= '0;
+                            acc <= '0;
+                            state <= S_ACCUM;
+                        end else begin
+                            fc_in_idx <= fc_in_idx + 1'b1;
+                            state <= S_LOAD;
+                        end
+                    end else begin
+                        load_pending_idx <= fc_in_idx;
+                        load_pending_last <= (fc_in_idx == in_c_reg - 1'b1);
+                        if (fc_in_idx != in_c_reg - 1'b1) begin
+                            fc_in_idx <= fc_in_idx + 1'b1;
+                        end
                         state <= S_LOAD;
                     end
                 end
                 S_LOAD: begin
-                    in_buf[fc_in_idx] <= in_rd_data;
-                    if (fc_in_idx == in_c_reg - 1'b1) begin
-                        fc_in_idx <= '0;
-                        acc <= '0;
-                        state <= S_ACCUM;
+                    if (RD_LATENCY == 0) begin
+                        in_buf[fc_in_idx] <= in_rd_data;
+                        if (fc_in_idx == in_c_reg - 1'b1) begin
+                            fc_in_idx <= '0;
+                            acc <= '0;
+                            state <= S_ACCUM;
+                        end else begin
+                            fc_in_idx <= fc_in_idx + 1'b1;
+                        end
                     end else begin
-                        fc_in_idx <= fc_in_idx + 1'b1;
+                        in_buf[load_pending_idx] <= in_rd_data;
+                        if (load_pending_last) begin
+                            fc_in_idx <= '0;
+                            acc <= '0;
+                            state <= S_ACCUM;
+                        end else begin
+                            load_pending_idx <= fc_in_idx;
+                            load_pending_last <= (fc_in_idx == in_c_reg - 1'b1);
+                            if (fc_in_idx != in_c_reg - 1'b1) begin
+                                fc_in_idx <= fc_in_idx + 1'b1;
+                            end
+                        end
                     end
                 end
                 S_ACCUM: begin
@@ -180,9 +223,15 @@ module fc_runner #(
         rq_out_ready = 1'b0;
 
         case (state)
-            S_LOAD: begin
+            S_LOAD_PRIME: begin
                 in_rd_en = 1'b1;
                 in_rd_addr = in_base_reg + fc_in_idx;
+            end
+            S_LOAD: begin
+                if ((RD_LATENCY == 0) || !load_pending_last) begin
+                    in_rd_en = 1'b1;
+                    in_rd_addr = in_base_reg + fc_in_idx;
+                end
             end
             S_QUANT: begin
                 rq_in_valid = 1'b1;

@@ -5,7 +5,8 @@ module gap_runner #(
     parameter int BIAS_W = 32,
     parameter int SHIFT_W = 6,
     parameter int ADDR_W = 32,
-    parameter int DIM_W = 16
+    parameter int DIM_W = 16,
+    parameter int RD_LATENCY = 0
 ) (
     input  logic clk,
     input  logic rst_n,
@@ -35,6 +36,7 @@ module gap_runner #(
 );
     typedef enum logic [2:0] {
         S_IDLE,
+        S_PRIME,
         S_READ,
         S_QUANT,
         S_WRITE,
@@ -52,14 +54,18 @@ module gap_runner #(
 
     logic [DIM_W-1:0] row;
     logic [DIM_W-1:0] col;
+    logic pending_last;
 
     logic signed [ACC_W-1:0] acc;
+    logic signed [ACC_W-1:0] acc_with_bias;
 
     logic rq_in_valid;
     logic rq_in_ready;
     logic rq_out_valid;
     logic rq_out_ready;
     logic signed [DATA_W-1:0] rq_out;
+
+    assign acc_with_bias = acc + $signed(gap_bias[ACC_W-1:0]);
 
     assign busy = (state != S_IDLE);
 
@@ -73,7 +79,7 @@ module gap_runner #(
         .rst_n(rst_n),
         .in_valid(rq_in_valid),
         .in_ready(rq_in_ready),
-        .in_acc(acc),
+        .in_acc(acc_with_bias),
         .mul_q31(gap_mul),
         .shift(gap_shift),
         .zp_out('0),
@@ -91,6 +97,7 @@ module gap_runner #(
             gap_ch_idx <= '0;
             row <= '0;
             col <= '0;
+            pending_last <= 1'b0;
             acc <= '0;
             h_reg <= '0;
             w_reg <= '0;
@@ -111,22 +118,77 @@ module gap_runner #(
                         gap_ch_idx <= '0;
                         row <= '0;
                         col <= '0;
+                        pending_last <= 1'b0;
                         acc <= '0;
+                        state <= S_PRIME;
+                    end
+                end
+                S_PRIME: begin
+                    if (RD_LATENCY == 0) begin
+                        acc <= acc + in_rd_data;
+                        if ((row == h_reg - 1'b1) && (col == w_reg - 1'b1)) begin
+                            state <= S_QUANT;
+                        end else begin
+                            if (col == w_reg - 1'b1) begin
+                                col <= '0;
+                                if (row == h_reg - 1'b1) begin
+                                    row <= '0;
+                                end else begin
+                                    row <= row + 1'b1;
+                                end
+                            end else begin
+                                col <= col + 1'b1;
+                            end
+                            state <= S_READ;
+                        end
+                    end else begin
+                        pending_last <= (row == h_reg - 1'b1) && (col == w_reg - 1'b1);
+                        if (col == w_reg - 1'b1) begin
+                            col <= '0;
+                            if (row == h_reg - 1'b1) begin
+                                row <= '0;
+                            end else begin
+                                row <= row + 1'b1;
+                            end
+                        end else begin
+                            col <= col + 1'b1;
+                        end
                         state <= S_READ;
                     end
                 end
                 S_READ: begin
                     acc <= acc + in_rd_data;
-                    if (col == w_reg - 1'b1) begin
-                        col <= '0;
-                        if (row == h_reg - 1'b1) begin
-                            row <= '0;
+                    if (RD_LATENCY == 0) begin
+                        if ((row == h_reg - 1'b1) && (col == w_reg - 1'b1)) begin
                             state <= S_QUANT;
                         end else begin
-                            row <= row + 1'b1;
+                            if (col == w_reg - 1'b1) begin
+                                col <= '0;
+                                if (row == h_reg - 1'b1) begin
+                                    row <= '0;
+                                end else begin
+                                    row <= row + 1'b1;
+                                end
+                            end else begin
+                                col <= col + 1'b1;
+                            end
                         end
                     end else begin
-                        col <= col + 1'b1;
+                        if (pending_last) begin
+                            state <= S_QUANT;
+                        end else begin
+                            pending_last <= (row == h_reg - 1'b1) && (col == w_reg - 1'b1);
+                            if (col == w_reg - 1'b1) begin
+                                col <= '0;
+                                if (row == h_reg - 1'b1) begin
+                                    row <= '0;
+                                end else begin
+                                    row <= row + 1'b1;
+                                end
+                            end else begin
+                                col <= col + 1'b1;
+                            end
+                        end
                     end
                 end
                 S_QUANT: begin
@@ -146,8 +208,9 @@ module gap_runner #(
                         gap_ch_idx <= gap_ch_idx + 1'b1;
                         row <= '0;
                         col <= '0;
+                        pending_last <= 1'b0;
                         acc <= '0;
-                        state <= S_READ;
+                        state <= S_PRIME;
                     end
                 end
                 S_DONE: begin
@@ -171,9 +234,15 @@ module gap_runner #(
         rq_out_ready = 1'b0;
 
         case (state)
-            S_READ: begin
+            S_PRIME: begin
                 in_rd_en = 1'b1;
                 in_rd_addr = in_base_reg + (gap_ch_idx * (h_reg * w_reg)) + (row * w_reg) + col;
+            end
+            S_READ: begin
+                if ((RD_LATENCY == 0) || !pending_last) begin
+                    in_rd_en = 1'b1;
+                    in_rd_addr = in_base_reg + (gap_ch_idx * (h_reg * w_reg)) + (row * w_reg) + col;
+                end
             end
             S_QUANT: begin
                 rq_in_valid = 1'b1;

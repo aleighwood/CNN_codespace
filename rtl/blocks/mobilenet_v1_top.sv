@@ -52,8 +52,12 @@ module mobilenet_v1_top #(
 
     input  logic start,
     output logic done,
+    output logic busy,
 
     input  logic tile_skip_en,
+    input  logic tile_mask_wr_en,
+    input  logic [TILE_MASK_ADDR_W-1:0] tile_mask_wr_addr,
+    input  logic tile_mask_wr_data,
 
     input  logic [DIM_W-1:0] cfg_in_img_h,
     input  logic [DIM_W-1:0] cfg_in_img_w,
@@ -86,7 +90,7 @@ module mobilenet_v1_top #(
     output logic [ADDR_W-1:0] dw_buf_wr_addr,
     output logic [DATA_W-1:0] dw_buf_wr_data
 );
-    logic busy;
+    logic core_busy;
     logic core_start;
     logic core_done;
 
@@ -119,8 +123,10 @@ module mobilenet_v1_top #(
     logic [DIM_W-1:0] tile_out_col;
     logic [DIM_W-1:0] tile_out_h;
     logic [DIM_W-1:0] tile_out_w;
+    logic tile_mask_rd_en;
     logic [TILE_MASK_ADDR_W-1:0] tile_mask_addr;
     logic tile_mask_data;
+    logic tile_mask_data_valid;
 
     logic skip_start;
     logic skip_active;
@@ -241,11 +247,13 @@ module mobilenet_v1_top #(
         .clk(clk),
         .rst_n(rst_n),
         .start(core_start),
-        .busy(busy),
+        .busy(core_busy),
         .done(core_done),
         .tile_skip_en(tile_skip_en),
+        .tile_mask_rd_en(tile_mask_rd_en),
         .tile_mask_addr(tile_mask_addr),
         .tile_mask_data(tile_mask_data),
+        .tile_mask_data_valid(tile_mask_data_valid),
         .cfg_in_img_h(cfg_in_img_h),
         .cfg_in_img_w(cfg_in_img_w),
         .cfg_fm_base0(cfg_fm_base0),
@@ -282,13 +290,20 @@ module mobilenet_v1_top #(
         .dws_done(dws_done)
     );
 
-    tile_mask_rom #(
+    tile_mask_mem #(
         .ADDR_W(TILE_MASK_ADDR_W),
         .DEPTH(TILE_MASK_DEPTH),
         .INIT_FILE(INIT_TILE_MASK)
-    ) u_tile_mask_rom (
+    ) u_tile_mask_mem (
+        .clk(clk),
+        .rst_n(rst_n),
+        .wr_en(tile_mask_wr_en),
+        .wr_addr(tile_mask_wr_addr),
+        .wr_data(tile_mask_wr_data),
+        .rd_en(tile_mask_rd_en),
         .addr(tile_mask_addr),
-        .data(tile_mask_data)
+        .data(tile_mask_data),
+        .data_valid(tile_mask_data_valid)
     );
 
     conv1_tile_runner #(
@@ -654,6 +669,8 @@ module mobilenet_v1_top #(
             endcase
         end
     end
+
+    assign busy = (top_state != TOP_IDLE);
 
     always_comb begin
         fm_rd_en = 1'b0;

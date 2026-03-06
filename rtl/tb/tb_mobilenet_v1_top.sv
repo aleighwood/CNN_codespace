@@ -26,7 +26,11 @@ module tb_mobilenet_v1_top;
     logic rst_n;
     logic start;
     logic done;
+    logic busy;
     logic tile_skip_en;
+    logic tile_mask_wr_en;
+    logic [DIM_W-1:0] tile_mask_wr_addr;
+    logic tile_mask_wr_data;
 
     logic [DIM_W-1:0] cfg_in_img_h;
     logic [DIM_W-1:0] cfg_in_img_w;
@@ -157,7 +161,11 @@ module tb_mobilenet_v1_top;
         .rst_n(rst_n),
         .start(start),
         .done(done),
+        .busy(busy),
         .tile_skip_en(tile_skip_en),
+        .tile_mask_wr_en(tile_mask_wr_en),
+        .tile_mask_wr_addr(tile_mask_wr_addr),
+        .tile_mask_wr_data(tile_mask_wr_data),
         .cfg_in_img_h(cfg_in_img_h),
         .cfg_in_img_w(cfg_in_img_w),
         .cfg_fm_base0(cfg_fm_base0),
@@ -277,6 +285,9 @@ module tb_mobilenet_v1_top;
         max_cycles = 50000000;
         verbose = 1'b0;
         tile_skip_en = 1'b0;
+        tile_mask_wr_en = 1'b0;
+        tile_mask_wr_addr = '0;
+        tile_mask_wr_data = 1'b0;
         void'($value$plusargs("IMG_H=%d", img_h_arg));
         void'($value$plusargs("IMG_W=%d", img_w_arg));
         void'($value$plusargs("MAX_CYCLES=%d", max_cycles));
@@ -707,7 +718,7 @@ module tb_mobilenet_v1_top;
                 $display("fc_start at cycle %0d", cycle);
             end
         end
-        if (dut.u_fc.state == 3 && last_fc_state != 3) begin
+        if (dut.fc_out_wr_en) begin
             acc64 = $signed(dut.u_fc.acc);
             shifted64 = rdivp_tb(srdhm_tb($signed(dut.u_fc.acc), $signed(dut.u_fc.fc_mul)),
                                  dut.u_fc.fc_shift);
@@ -764,7 +775,7 @@ module tb_mobilenet_v1_top;
             layer_fname = "rtl/mem/gap_out_hw.mem";
             layer_fh = $fopen(layer_fname, "w");
             for (out_i = 0; out_i < dut.cur_in_c; out_i = out_i + 1) begin
-                $fdisplay(layer_fh, "%02x", fm_mem[dut.out_base_addr + out_i]);
+                $fdisplay(layer_fh, "%02x", fm_mem[dut.u_gap.out_base_reg + out_i]);
             end
             $fclose(layer_fh);
         end
@@ -775,7 +786,7 @@ module tb_mobilenet_v1_top;
             $display("TARGET q hits: %0d last_q=%0d (0x%02x)", target_q_hits, $signed(target_last_q), target_last_q);
             $display("TARGET acc hits: %0d last_acc=%0d (0x%08x)", target_acc_hits, $signed(target_last_acc), target_last_acc);
             fo = $fopen(FC_OUT_MEM, "w");
-            fc_base = dut.in_base_addr;
+            fc_base = dut.u_fc.out_base_reg;
             for (out_i = 0; out_i < FC_OUT_CH; out_i = out_i + 1) begin
                 $fdisplay(fo, "%02x", fm_mem[fc_base + out_i]);
             end

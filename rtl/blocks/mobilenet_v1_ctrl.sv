@@ -13,8 +13,10 @@ module mobilenet_v1_ctrl #(
     output logic done,
 
     input  logic tile_skip_en,
+    output logic tile_mask_rd_en,
     output logic [MASK_ADDR_W-1:0] tile_mask_addr,
     input  logic tile_mask_data,
+    input  logic tile_mask_data_valid,
 
     input  logic [DIM_W-1:0] cfg_in_img_h,
     input  logic [DIM_W-1:0] cfg_in_img_w,
@@ -92,9 +94,9 @@ module mobilenet_v1_ctrl #(
     logic [DIM_W-1:0] next_out_c;
     logic [MASK_ADDR_W-1:0] mask_base;
     logic [MASK_ADDR_W-1:0] layer_tile_count;
-    logic tile_keep;
 
     logic tile_active;
+    logic tile_mask_pending;
     logic tile_wait;
 
     logic base_sel;
@@ -141,7 +143,6 @@ module mobilenet_v1_ctrl #(
         tiles_w_calc = ceil_div(cur_out_w, TILE_W);
         layer_tile_count = tiles_h_calc * tiles_w_calc;
         tile_mask_addr = mask_base + tile_idx;
-        tile_keep = !tile_skip_en || tile_mask_data;
     end
 
     always_comb begin
@@ -198,6 +199,8 @@ module mobilenet_v1_ctrl #(
             tile_start <= 1'b0;
             tile_ready <= 1'b0;
             tile_active <= 1'b0;
+            tile_mask_rd_en <= 1'b0;
+            tile_mask_pending <= 1'b0;
             tile_wait <= 1'b0;
             skip_start <= 1'b0;
             skip_active <= 1'b0;
@@ -210,6 +213,7 @@ module mobilenet_v1_ctrl #(
             tile_cfg_valid <= 1'b0;
             tile_start <= 1'b0;
             tile_ready <= 1'b0;
+            tile_mask_rd_en <= 1'b0;
             skip_start <= 1'b0;
             conv1_start <= 1'b0;
             dws_start <= 1'b0;
@@ -226,6 +230,7 @@ module mobilenet_v1_ctrl #(
                 base_sel <= 1'b0;
                 mask_base <= '0;
                 skip_active <= 1'b0;
+                tile_mask_pending <= 1'b0;
                 state <= S_CFG;
             end
 
@@ -243,13 +248,30 @@ module mobilenet_v1_ctrl #(
             if (state == S_START) begin
                 tile_start <= 1'b1;
                 tile_active <= 1'b0;
+                tile_mask_pending <= 1'b0;
                 state <= S_TILE;
             end
 
             if (state == S_TILE) begin
-                if (tile_valid && !tile_active && !runner_busy && !tile_wait) begin
+                if (tile_valid && !tile_active && !runner_busy && !tile_wait && !tile_mask_pending) begin
+                    if (!tile_skip_en) begin
+                        tile_active <= 1'b1;
+                        skip_active <= 1'b0;
+                        if (layer_is_conv1) begin
+                            conv1_start <= 1'b1;
+                        end else begin
+                            dws_start <= 1'b1;
+                        end
+                    end else begin
+                        tile_mask_rd_en <= 1'b1;
+                        tile_mask_pending <= 1'b1;
+                    end
+                end
+
+                if (tile_mask_pending && tile_mask_data_valid && !tile_active && !runner_busy) begin
+                    tile_mask_pending <= 1'b0;
                     tile_active <= 1'b1;
-                    if (tile_keep) begin
+                    if (tile_mask_data) begin
                         skip_active <= 1'b0;
                         if (layer_is_conv1) begin
                             conv1_start <= 1'b1;
@@ -269,7 +291,7 @@ module mobilenet_v1_ctrl #(
                     tile_wait <= 1'b1;
                 end
 
-                if (tile_done && !tile_active) begin
+                if (tile_done && !tile_active && !tile_mask_pending) begin
                     state <= S_NEXT;
                 end
             end
