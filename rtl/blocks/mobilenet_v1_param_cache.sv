@@ -116,41 +116,48 @@ module mobilenet_v1_param_cache #(
     localparam int FC_WEIGHT_DEPTH = FC_OUT_CH * FC_IN_CH;
     localparam int PW_ADDR_W = (PW_WEIGHT_DEPTH <= 1) ? 1 : $clog2(PW_WEIGHT_DEPTH);
 
-    logic signed [WR_W-1:0] conv1_weight_mem [0:CONV1_WEIGHT_DEPTH-1];
-    logic signed [WR_W-1:0] conv1_bias_acc_mem [0:CONV1_OUT_CH-1];
-    logic signed [WR_W-1:0] conv1_mul_mem [0:CONV1_OUT_CH-1];
-    logic signed [WR_W-1:0] conv1_bias_requant_mem [0:CONV1_OUT_CH-1];
-    logic [WR_W-1:0] conv1_shift_mem [0:CONV1_OUT_CH-1];
-    logic signed [WR_W-1:0] conv1_relu6_mem [0:CONV1_OUT_CH-1];
-    logic signed [WR_W-1:0] conv1_relu6_min_mem [0:CONV1_OUT_CH-1];
+    /*
+     * These are still plain RTL arrays so the current combinational parameter
+     * reads remain intact for simulation and the existing datapath timing.
+     * The attributes below express the intended synthesis landing zone:
+     * large weight stores -> URAM, smaller per-channel tables -> BRAM.
+     * Vivado still needs to confirm the final mapping.
+     */
+    (* ram_style = "block" *) logic signed [WR_W-1:0] conv1_weight_mem [0:CONV1_WEIGHT_DEPTH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] conv1_bias_acc_mem [0:CONV1_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] conv1_mul_mem [0:CONV1_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] conv1_bias_requant_mem [0:CONV1_OUT_CH-1];
+    (* ram_style = "block" *) logic [WR_W-1:0] conv1_shift_mem [0:CONV1_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] conv1_relu6_mem [0:CONV1_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] conv1_relu6_min_mem [0:CONV1_OUT_CH-1];
 
-    logic signed [WR_W-1:0] dw_weight_mem [0:DW_WEIGHT_DEPTH-1];
-    logic signed [WR_W-1:0] dw_mul_mem [0:DW_TOTAL_CH-1];
-    logic signed [WR_W-1:0] dw_bias_mem [0:DW_TOTAL_CH-1];
-    logic [WR_W-1:0] dw_shift_mem [0:DW_TOTAL_CH-1];
-    logic signed [WR_W-1:0] dw_relu6_mem [0:DW_TOTAL_CH-1];
-    logic signed [WR_W-1:0] dw_relu6_min_mem [0:DW_TOTAL_CH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] dw_weight_mem [0:DW_WEIGHT_DEPTH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] dw_mul_mem [0:DW_TOTAL_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] dw_bias_mem [0:DW_TOTAL_CH-1];
+    (* ram_style = "block" *) logic [WR_W-1:0] dw_shift_mem [0:DW_TOTAL_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] dw_relu6_mem [0:DW_TOTAL_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] dw_relu6_min_mem [0:DW_TOTAL_CH-1];
 
-    logic signed [WR_W-1:0] pw_weight_mem [0:PW_WEIGHT_DEPTH-1];
-    logic signed [WR_W-1:0] pw_bias_acc_mem [0:PW_TOTAL_OUT_CH-1];
-    logic signed [WR_W-1:0] pw_mul_mem [0:PW_TOTAL_OUT_CH-1];
-    logic signed [WR_W-1:0] pw_bias_requant_mem [0:PW_TOTAL_OUT_CH-1];
-    logic [WR_W-1:0] pw_shift_mem [0:PW_TOTAL_OUT_CH-1];
-    logic signed [WR_W-1:0] pw_relu6_mem [0:PW_TOTAL_OUT_CH-1];
-    logic signed [WR_W-1:0] pw_relu6_min_mem [0:PW_TOTAL_OUT_CH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_weight_mem [0:PW_WEIGHT_DEPTH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] pw_bias_acc_mem [0:PW_TOTAL_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] pw_mul_mem [0:PW_TOTAL_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] pw_bias_requant_mem [0:PW_TOTAL_OUT_CH-1];
+    (* ram_style = "block" *) logic [WR_W-1:0] pw_shift_mem [0:PW_TOTAL_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] pw_relu6_mem [0:PW_TOTAL_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] pw_relu6_min_mem [0:PW_TOTAL_OUT_CH-1];
 
-    logic signed [WR_W-1:0] gap_mul_mem [0:GAP_CH-1];
-    logic signed [WR_W-1:0] gap_bias_mem [0:GAP_CH-1];
-    logic [WR_W-1:0] gap_shift_mem [0:GAP_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] gap_mul_mem [0:GAP_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] gap_bias_mem [0:GAP_CH-1];
+    (* ram_style = "block" *) logic [WR_W-1:0] gap_shift_mem [0:GAP_CH-1];
 
-    logic signed [WR_W-1:0] fc_weight_mem [0:FC_WEIGHT_DEPTH-1];
-    logic signed [WR_W-1:0] fc_mul_mem [0:FC_OUT_CH-1];
-    logic signed [WR_W-1:0] fc_bias_mem [0:FC_OUT_CH-1];
-    logic [WR_W-1:0] fc_shift_mem [0:FC_OUT_CH-1];
-    logic signed [WR_W-1:0] fc_zp_mem [0:FC_OUT_CH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] fc_weight_mem [0:FC_WEIGHT_DEPTH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] fc_mul_mem [0:FC_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] fc_bias_mem [0:FC_OUT_CH-1];
+    (* ram_style = "block" *) logic [WR_W-1:0] fc_shift_mem [0:FC_OUT_CH-1];
+    (* ram_style = "block" *) logic signed [WR_W-1:0] fc_zp_mem [0:FC_OUT_CH-1];
 
     localparam int PW_CACHE_DEPTH = PW_GROUP * MAX_PW_IN_CH;
-    logic signed [WR_W-1:0] pw_cache_mem [0:1][0:PW_CACHE_DEPTH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem [0:1][0:PW_CACHE_DEPTH-1];
     logic [DIM_W-1:0] pw_cache_group [0:1];
     logic [DIM_W-1:0] pw_cache_layer [0:1];
     logic pw_cache_valid [0:1];
