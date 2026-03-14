@@ -1,0 +1,302 @@
+# GPU MODEL
+
+`CNN_codespace/` is the FPGA reference project and is left unchanged.
+
+The top-level code outside `CNN_codespace/` is the GPU-side evaluation path for coarse-grained sparse MobileNet inference.
+
+The intended logic is:
+
+1. Treat the downloaded image dataset as camera frames.
+2. Use background removal as a stand-in for the missing depth sensor.
+3. Build an ROI mask for each image.
+4. Treat pixels outside the ROI as zero.
+5. Convert the ROI mask into active tiles.
+6. Run full MobileNet inference in three modes:
+   - `dense_unmasked`
+   - `dense_masked`
+   - `sparse_masked`
+7. Sweep tile parameters across the dataset.
+8. Plot how accuracy, active tile count, and wall time move with those parameters.
+
+## Code Layout
+
+- `generate_synthetic_scene.py`
+  Generates a synthetic square RGB image and a pseudo depth image. The default scene contains a foreground object in the middle and background farther away. It writes a preview plus `synthetic_scene.npz`.
+
+- `roi_tiles.py`
+  Loads `synthetic_scene.npz`, thresholds depth to produce a binary ROI mask, zeroes the RGB image outside that ROI, then converts the ROI mask into per-tile pixel counts. By default it uses direct 2D mask aggregation. It can also use the slower explicit scanline-stream method for comparison. A tile becomes active only if its ROI-pixel count is at least `min_active_pixels`.
+
+- `tiled_conv_demo.py`
+  Older single-layer debug/demo script. Not the main dataset evaluation path.
+
+- `active_tile_pixel_one_image_sweep.py`
+  Runs a one-image evaluation sweep. It sweeps `min_active_pixels`, tile width, and tile height, measures tiled GPU wall time, records how many tiles were active, compares tiled convolution against dense convolution, writes CSV summaries, and saves plots to `active_tile_pixel_one_image_sweep/`.
+
+- `dataset_roi_generator.py`
+  Uses background removal as a surrogate ROI generator for the downloaded image dataset. It treats each dataset image as one frame, estimates the foreground object region, converts that region into a cropped bounding-box ROI mask, and saves per-image ROI bundles.
+
+- `active_tile_pixel_dataset_sweep.py`
+  Main evaluation script. Sweeps sparse-convolution parameters across the ROI-generated dataset using full sparse MobileNet inference. It propagates tile masks layer by layer, runs full-model sparse tiled execution, measures dataset-level top-1/top-5 accuracy, compares all three baselines, and saves CSV summaries and plots.
+
+- `sparse_mobilenet.py`
+  Full coarse-grained sparse MobileNet runner. It propagates per-layer support masks, generates active tiles for each layer, runs layer-by-layer sparse tiled execution on GPU, and provides the three inference paths used in evaluation:
+  - `dense_unmasked`
+  - `dense_masked`
+  - `sparse_masked`
+
+- `main_gpu.py`
+  Runs the default dataset pipeline end to end: generates ROI bundles for the downloaded image dataset using background removal if they do not already exist, then launches the dataset-wide sweep so you get the plot set in one command.
+
+- `prepare.py`
+  Existing MobileNet/ImageNet setup script. Not part of the sparse demo flow.
+
+- `mobile_net.py`
+  Existing MobileNet/ImageNet evaluation script. Not part of the sparse demo flow.
+
+## Dataset Evaluation Logic
+
+For dataset-wide evaluation, the logic is:
+
+1. Use the downloaded image dataset as stand-in camera frames.
+2. Since there is no depth sensor right now, use background removal to estimate the object region.
+3. Convert the detected foreground into an ROI mask for each image.
+4. Treat pixels outside that ROI as zero.
+5. Convert each ROI mask into active tiles.
+6. Propagate those support masks layer by layer through the network.
+7. Run full MobileNet inference in three modes:
+   - `dense_unmasked`: full original image, no ROI masking
+   - `dense_masked`: ROI-masked image, but dense full-grid inference
+   - `sparse_masked`: ROI-masked image, sparse tiled inference
+8. Sweep parameter changes across the whole dataset and aggregate wall time, active tile count, and classification accuracy.
+
+## What The Three Baselines Mean
+
+- `dense_unmasked`
+  Conventional full-image MobileNet baseline. This is the reference for “normal” inference without ROI masking.
+
+- `dense_masked`
+  Same model, but with the input image masked outside the ROI. This isolates the effect of removing background.
+
+- `sparse_masked`
+  Same masked input as `dense_masked`, but only the active tiles are convolved. This isolates the effect of coarse-grained sparsity.
+
+The important comparisons are:
+
+- `dense_unmasked` vs `dense_masked`
+  How much does ROI masking alone change accuracy?
+
+- `dense_masked` vs `sparse_masked`
+  How much extra accuracy change comes from sparse tile skipping?
+
+- `dense_unmasked` vs `sparse_masked`
+  What is the overall cost/benefit of the full proposed architecture?
+
+## Important Deployment Note
+
+There are two ways to convert a 2D ROI mask into tile counts in this codebase:
+
+- `direct`
+  Fast offline computation directly from the 2D mask.
+- `scanline`
+  Explicit pixel-stream style processing, matching the intended left-to-right, row-by-row streaming behavior.
+
+For offline evaluation:
+
+- `direct` is the default because it is much faster.
+
+For deployment:
+
+- you MUST use `scanline`
+- this is the method that matches the intended streamed sensor/input behavior
+- if you are validating deployment behavior, do not use `direct`
+- `direct` is only a faster evaluation shortcut
+
+## How To Run
+
+Install the minimal dependencies if needed:
+
+```bash
+pip install numpy pillow torch torchvision matplotlib opencv-python transparent-background
+```
+
+The dataset pipeline also requires a working CUDA setup for:
+
+- PyTorch GPU execution
+- `transparent-background` running with `device='cuda'`
+
+If either of those is not available, use the one-image CPU path first or change the relevant script arguments to `--device cpu`.
+
+## Dataset ROI Generation
+
+To generate ROI bundles for the downloaded image dataset:
+
+```bash
+python3 dataset_roi_generator.py \
+  --dataset-dir imagenet_val \
+  --output-dir dataset_roi_frames \
+  --image-size 224 \
+  --padding 15 \
+  --device cuda
+```
+
+This treats every image under `imagenet_val/` as one frame, runs the foreground-removal model, computes a bounding-box ROI, and saves one ROI bundle per image under `dataset_roi_frames/`.
+
+Important behavior:
+
+- this is the current stand-in for the missing depth sensor
+- the ROI comes from background removal, not from real depth
+- the ROI mask comes from the foreground alpha mask
+- a bounding-box version is also saved for inspection
+- pixels outside that ROI are treated as zero by the sparse convolution stage
+
+Each per-image folder contains:
+
+- `rgb.png`
+- `alpha.png`
+- `roi_mask.png`
+- `bbox_mask.png`
+- `masked_rgb.png`
+- `cropped_rgb.png` when a bounding box exists
+- `roi_input.npz`
+
+For a smaller trial run first:
+
+```bash
+python3 dataset_roi_generator.py \
+  --dataset-dir imagenet_val \
+  --output-dir dataset_roi_frames \
+  --max-images 100 \
+  --device cuda
+```
+
+## Dataset Sweep
+
+After generating the ROI bundles for the dataset, run the dataset-wide sweep with:
+
+```bash
+python3 active_tile_pixel_dataset_sweep.py \
+  --roi-dataset-dir dataset_roi_frames \
+  --device cuda
+```
+
+This writes results under `active_tile_pixel_dataset_sweep/`, including:
+
+- `threshold_sweep.csv`
+- `tile_width_sweep.csv`
+- `tile_height_sweep.csv`
+- `threshold_sweep.png`
+- `tile_width_sweep.png`
+- `tile_height_sweep.png`
+
+What it sweeps:
+
+1. `min_active_pixels`
+2. `tile_width`
+3. `tile_height`
+
+What it aggregates across the whole ROI-generated dataset:
+
+- mean sparse wall GPU time
+- mean dense masked wall GPU time
+- mean dense unmasked wall GPU time
+- mean active tile count
+- sparse top-1 accuracy
+- sparse top-5 accuracy
+- dense masked top-1 accuracy
+- dense masked top-5 accuracy
+- dense unmasked top-1 accuracy
+- dense unmasked top-5 accuracy
+- sparse vs dense masked prediction agreement
+- dense masked vs dense unmasked prediction agreement
+- sparse vs dense unmasked prediction agreement
+- sparse vs dense masked output difference
+
+The dataset sweep now prints progress while running:
+
+- which sweep dimension is currently being evaluated
+- which configuration value is running
+- how many images have been processed so far
+
+The dataset sweep also parallelizes the CPU-side tile generation stage across worker processes.
+
+- default worker count: `min(24, cpu_count)`
+- override with `--workers N`
+- GPU convolution still runs in the main process
+- this avoids multiple worker processes competing for CUDA while still accelerating the expensive CPU tile-generation step
+
+The default tile-count mode for the dataset sweep is:
+
+- `--tile-count-method direct`
+
+If you want to compare against the slower explicit stream-style method:
+
+```bash
+python3 active_tile_pixel_dataset_sweep.py \
+  --roi-dataset-dir dataset_roi_frames \
+  --device cuda \
+  --tile-count-method scanline
+```
+
+If you are running a deployment-faithful experiment, you should use:
+
+```bash
+python3 active_tile_pixel_dataset_sweep.py \
+  --roi-dataset-dir dataset_roi_frames \
+  --device cuda \
+  --tile-count-method scanline
+```
+
+Again: for deployment-faithful behavior, `scanline` is required.
+
+To explicitly use 24 CPU workers for tile generation:
+
+```bash
+python3 active_tile_pixel_dataset_sweep.py \
+  --roi-dataset-dir dataset_roi_frames \
+  --device cuda \
+  --workers 24
+```
+
+If you want a smaller end-to-end run first, generate a limited ROI dataset:
+
+```bash
+python3 dataset_roi_generator.py \
+  --dataset-dir imagenet_val \
+  --output-dir dataset_roi_frames \
+  --max-images 100 \
+  --device cuda
+python3 active_tile_pixel_dataset_sweep.py \
+  --roi-dataset-dir dataset_roi_frames \
+  --device cuda \
+  --max-images 100
+```
+
+## Full Default Pipeline
+
+To run the whole default flow in one command:
+
+```bash
+python3 main_gpu.py
+```
+
+`main_gpu.py` does this in order:
+
+1. checks whether `dataset_roi_frames/manifest.csv` already exists
+2. if not, processes the downloaded dataset under `imagenet_val/` and generates per-image ROI bundles under `dataset_roi_frames/`
+3. if yes, reuses the existing ROI dataset and skips regeneration
+4. runs the dataset-wide sweep
+5. saves the final plots and CSVs under `active_tile_pixel_dataset_sweep/`
+
+So after `python3 main_gpu.py`, the plots you want should be under:
+
+- `active_tile_pixel_dataset_sweep/threshold_sweep.png`
+- `active_tile_pixel_dataset_sweep/tile_width_sweep.png`
+- `active_tile_pixel_dataset_sweep/tile_height_sweep.png`
+
+Those plots now use:
+
+- wall GPU time
+- active tile count
+- sparse masked top-1 classification accuracy
+- dense masked top-1 classification accuracy
+- dense unmasked top-1 classification accuracy
