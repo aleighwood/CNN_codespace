@@ -58,3 +58,5 @@ processed_frames/*
 selected_frames/*
 daisy.jpeg
 rtl/mem/tile_mask_info.txt
+
+report/*
