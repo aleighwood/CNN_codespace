@@ -1,4 +1,4 @@
-gpu-environment-host
+venv
 imagenet_val
 my_mobilenet_with_weights.pth
 __pycache__/
