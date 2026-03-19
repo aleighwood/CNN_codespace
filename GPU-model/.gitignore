@@ -10,3 +10,4 @@ active_tile_pixel_dataset_sweep*/
 *.npy
 *.pt
 *.pth
+*.zip

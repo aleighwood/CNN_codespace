@@ -43,7 +43,12 @@ def image_to_normalized_tensor(rgb: np.ndarray, device: torch.device) -> torch.T
 
 
 def label_from_roi_input_path(path: str) -> int:
-    return int(path.split("/")[-2].split("__")[0])
+    class_token = path.split("/")[-2].split("__")[0]
+    if class_token.isdigit():
+        return int(class_token)
+    if class_token.startswith("n"):
+        raise ValueError(f"ROI bundle {path} uses synset class names; read label from bundle contents instead of path parsing.")
+    raise ValueError(f"Cannot infer label from ROI bundle path: {path}")
 
 
 def tile_counts_from_mask(mask: np.ndarray, tile_width: int, tile_height: int, method: str) -> np.ndarray:

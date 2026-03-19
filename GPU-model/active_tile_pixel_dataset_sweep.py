@@ -66,6 +66,10 @@ def plot_sweep(rows: list[dict], x_key: str, title: str, output_path: Path) -> N
 def build_eval_bundle_worker(args: tuple[str, int, int, int, str]) -> dict:
     roi_input_path, tile_width, tile_height, min_active_pixels, tile_count_method = args
     bundle = np.load(roi_input_path)
+    if "label" in bundle:
+        label = int(bundle["label"])
+    else:
+        label = label_from_roi_input_path(roi_input_path)
     pixel_masks, tile_masks = build_layer_masks(
         roi_mask=bundle["roi_mask"],
         tile_width=tile_width,
@@ -76,7 +80,7 @@ def build_eval_bundle_worker(args: tuple[str, int, int, int, str]) -> dict:
     return {
         "rgb": bundle["rgb"],
         "masked_rgb": bundle["masked_rgb"],
-        "label": label_from_roi_input_path(roi_input_path),
+        "label": label,
         "pixel_masks": pixel_masks,
         "tile_masks": tile_masks,
         "active_tiles": int(sum(mask.sum() for mask in tile_masks)),

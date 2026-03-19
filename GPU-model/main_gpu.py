@@ -7,8 +7,9 @@ from active_tile_pixel_dataset_sweep import main as dataset_sweep_main
 def main() -> int:
     roi_dir = Path("dataset_roi_frames")
     manifest_path = roi_dir / "manifest.csv"
+    has_roi_inputs = any(roi_dir.rglob("roi_input.npz")) if roi_dir.exists() else False
 
-    if manifest_path.exists():
+    if manifest_path.exists() and has_roi_inputs:
         print(f"Reusing existing ROI dataset: {roi_dir}")
     else:
         process_dataset(

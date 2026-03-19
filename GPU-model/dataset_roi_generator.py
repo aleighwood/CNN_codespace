@@ -48,6 +48,8 @@ def bbox_to_mask(height: int, width: int, bbox: tuple[int, int, int, int] | None
 def save_roi_bundle(
     output_dir: Path,
     image_key: str,
+    label: int,
+    class_name: str,
     rgb: np.ndarray,
     alpha: np.ndarray,
     roi_mask: np.ndarray,
@@ -62,6 +64,8 @@ def save_roi_bundle(
 
     np.savez(
         item_dir / "roi_input.npz",
+        label=np.int32(label),
+        class_name=np.array(class_name),
         rgb=rgb,
         alpha=alpha,
         roi_mask=roi_mask,
@@ -99,6 +103,9 @@ def process_dataset(
     if max_images is not None:
         images = images[: max(0, max_images)]
 
+    class_names = sorted({path.parent.name for path in images})
+    class_to_idx = {class_name: idx for idx, class_name in enumerate(class_names)}
+
     print("Initializing background remover...")
     remover = Remover(device=device)
 
@@ -106,6 +113,8 @@ def process_dataset(
     for index, image_path in enumerate(images, start=1):
         rel = image_path.relative_to(dataset_root)
         image_key = str(rel.with_suffix("")).replace("/", "__")
+        class_name = image_path.parent.name
+        label = class_to_idx[class_name]
 
         rgb_pil = resize_rgb(Image.open(image_path), image_size)
         out = remover.process(rgb_pil, type="rgba")
@@ -116,11 +125,13 @@ def process_dataset(
         bbox = alpha_bbox((roi_mask * 255).astype(np.uint8))
         bbox_mask = bbox_to_mask(alpha.shape[0], alpha.shape[1], bbox, padding=padding)
 
-        save_roi_bundle(out_root, image_key, rgb, alpha, roi_mask, bbox_mask, bbox)
+        save_roi_bundle(out_root, image_key, label, class_name, rgb, alpha, roi_mask, bbox_mask, bbox)
         manifest_rows.append(
             {
                 "image_key": image_key,
                 "source_path": str(image_path),
+                "class_name": class_name,
+                "label": label,
                 "roi_pixels": int(roi_mask.sum()),
                 "bbox_found": int(bbox is not None),
             }
@@ -130,9 +141,11 @@ def process_dataset(
 
     manifest_path = out_root / "manifest.csv"
     with manifest_path.open("w", encoding="utf-8") as handle:
-        handle.write("image_key,source_path,roi_pixels,bbox_found\n")
+        handle.write("image_key,source_path,class_name,label,roi_pixels,bbox_found\n")
         for row in manifest_rows:
-            handle.write(f"{row['image_key']},{row['source_path']},{row['roi_pixels']},{row['bbox_found']}\n")
+            handle.write(
+                f"{row['image_key']},{row['source_path']},{row['class_name']},{row['label']},{row['roi_pixels']},{row['bbox_found']}\n"
+            )
 
     print(f"Saved ROI dataset to: {out_root}")
     print(f"Saved manifest: {manifest_path}")
