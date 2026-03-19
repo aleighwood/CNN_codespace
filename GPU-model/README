@@ -47,6 +47,9 @@ The intended logic is:
 - `main_gpu.py`
   Runs the default dataset pipeline end to end: generates ROI bundles for the downloaded image dataset using background removal if they do not already exist, then launches the dataset-wide sweep so you get the plot set in one command.
 
+- `just_plot_graphs.py`
+  Regenerates the dataset-sweep plots from the existing CSV files under `active_tile_pixel_dataset_sweep/` without rerunning inference, then computes image-index tile-efficiency statistics from `dataset_roi_frames/`, writes a CSV summary, and saves the corresponding plot.
+
 - `prepare.py`
   Existing MobileNet/ImageNet setup script. Not part of the sparse demo flow.
 
@@ -300,3 +303,22 @@ Those plots now use:
 - sparse masked top-1 classification accuracy
 - dense masked top-1 classification accuracy
 - dense unmasked top-1 classification accuracy
+
+## Plot Only
+
+If you already have the dataset-sweep CSV outputs and only want to redraw the figures, use:
+
+```bash
+python3 just_plot_graphs.py
+```
+
+This script always reads the CSV files from `active_tile_pixel_dataset_sweep/` and rewrites:
+
+- `threshold_sweep.png`
+- `tile_width_sweep.png`
+- `tile_height_sweep.png`
+
+After regenerating those plots, it also reads all ROI bundles under `dataset_roi_frames/`, computes per-image tile-efficiency statistics for every dataset-sweep configuration, and writes:
+
+- `image_tile_efficiency.csv`
+- `tile_efficiency_by_image.png`

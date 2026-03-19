@@ -26,38 +26,71 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def _apply_plot_style() -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "font.size": 11,
+            "axes.titlesize": 13,
+            "axes.labelsize": 11,
+            "legend.fontsize": 10,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "axes.linewidth": 0.9,
+            "grid.linewidth": 0.6,
+            "grid.alpha": 0.28,
+            "lines.linewidth": 1.8,
+            "lines.markersize": 5.5,
+            "figure.facecolor": "white",
+            "axes.facecolor": "white",
+            "savefig.facecolor": "white",
+        }
+    )
+
+
 def plot_sweep(rows: list[dict], x_key: str, title: str, output_path: Path) -> None:
+    _apply_plot_style()
     x = [row[x_key] for row in rows]
     sparse_ms = [row["sparse_ms"] for row in rows]
+    dense_masked_ms = [row["dense_masked_ms"] for row in rows]
+    dense_unmasked_ms = [row["dense_unmasked_ms"] for row in rows]
     active_tiles = [row["active_tiles"] for row in rows]
+    active_ratio = [100.0 * row["active_ratio"] for row in rows]
     sparse_top1 = [row["sparse_top1_acc"] for row in rows]
     dense_masked_top1 = [row["dense_masked_top1_acc"] for row in rows]
     dense_unmasked_top1 = [row["dense_unmasked_top1_acc"] for row in rows]
 
-    fig, ax1 = plt.subplots(figsize=(11, 6))
-    ax1.plot(x, sparse_ms, color="tab:blue", marker="o", label="mean sparse wall time (ms)")
-    ax1.set_xlabel(x_key.replace("_", " "))
-    ax1.set_ylabel("wall time (ms)", color="tab:blue")
-    ax1.tick_params(axis="y", labelcolor="tab:blue")
+    fig, axes = plt.subplots(3, 1, figsize=(9.2, 9.4), sharex=True)
 
-    ax2 = ax1.twinx()
-    ax2.plot(x, active_tiles, color="tab:red", marker="s", label="mean active tiles")
-    ax2.set_ylabel("active tiles", color="tab:red")
-    ax2.tick_params(axis="y", labelcolor="tab:red")
+    runtime_ax, tiles_ax, acc_ax = axes
 
-    ax3 = ax1.twinx()
-    ax3.spines["right"].set_position(("axes", 1.12))
-    ax3.plot(x, sparse_top1, color="tab:green", marker="^", label="sparse masked top-1 (%)")
-    ax3.plot(x, dense_masked_top1, color="tab:olive", marker="v", label="dense masked top-1 (%)")
-    ax3.plot(x, dense_unmasked_top1, color="tab:purple", marker="d", label="dense unmasked top-1 (%)")
-    ax3.set_ylabel("top-1 accuracy (%)", color="tab:green")
-    ax3.tick_params(axis="y", labelcolor="tab:green")
+    runtime_ax.plot(x, dense_unmasked_ms, color="#1f77b4", marker="o", label="Dense unmasked")
+    runtime_ax.plot(x, dense_masked_ms, color="#ff7f0e", marker="s", label="Dense masked")
+    runtime_ax.plot(x, sparse_ms, color="#2ca02c", marker="^", label="Sparse masked")
+    runtime_ax.set_ylabel("Mean latency (ms)")
+    runtime_ax.set_title(title)
+    runtime_ax.grid(True)
+    runtime_ax.legend(loc="best", ncol=3, frameon=True)
 
-    lines = ax1.get_lines() + ax2.get_lines() + ax3.get_lines()
-    labels = [line.get_label() for line in lines]
-    ax1.legend(lines, labels, loc="upper left")
-    ax1.set_title(title)
-    ax1.grid(True, alpha=0.3)
+    tiles_ax.plot(x, active_tiles, color="#d62728", marker="o", label="Mean active tiles")
+    tiles_ax.plot(x, active_ratio, color="#9467bd", marker="s", label="Mean active ratio (%)")
+    tiles_ax.set_ylabel("Tile activity")
+    tiles_ax.grid(True)
+    tiles_ax.legend(loc="best", ncol=2, frameon=True)
+
+    acc_ax.plot(x, dense_unmasked_top1, color="#1f77b4", marker="o", label="Dense unmasked top-1")
+    acc_ax.plot(x, dense_masked_top1, color="#ff7f0e", marker="s", label="Dense masked top-1")
+    acc_ax.plot(x, sparse_top1, color="#2ca02c", marker="^", label="Sparse masked top-1")
+    acc_ax.set_xlabel(x_key.replace("_", " "))
+    acc_ax.set_ylabel("Top-1 accuracy (%)")
+    acc_ax.grid(True)
+    acc_ax.legend(loc="best", ncol=3, frameon=True)
+
+    for ax in axes:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    fig.align_ylabels(axes)
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)

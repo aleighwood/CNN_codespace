@@ -17,34 +17,62 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
+def _apply_plot_style() -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "font.size": 11,
+            "axes.titlesize": 13,
+            "axes.labelsize": 11,
+            "legend.fontsize": 10,
+            "xtick.labelsize": 10,
+            "ytick.labelsize": 10,
+            "axes.linewidth": 0.9,
+            "grid.linewidth": 0.6,
+            "grid.alpha": 0.28,
+            "lines.linewidth": 1.8,
+            "lines.markersize": 5.5,
+            "figure.facecolor": "white",
+            "axes.facecolor": "white",
+            "savefig.facecolor": "white",
+        }
+    )
+
+
 def plot_sweep(rows: list[dict], x_key: str, title: str, output_path: Path) -> None:
+    _apply_plot_style()
     x = [row[x_key] for row in rows]
+    dense_ms = [row["dense_ms"] for row in rows]
     tiled_ms = [row["tiled_ms"] for row in rows]
     active_tiles = [row["active_tiles"] for row in rows]
     correctness = [row["mean_abs_diff"] for row in rows]
 
-    fig, ax1 = plt.subplots(figsize=(10, 6))
-    ax1.plot(x, tiled_ms, color="tab:blue", marker="o", label="tiled wall time (ms)")
-    ax1.set_xlabel(x_key.replace("_", " "))
-    ax1.set_ylabel("wall time (ms)", color="tab:blue")
-    ax1.tick_params(axis="y", labelcolor="tab:blue")
+    fig, axes = plt.subplots(3, 1, figsize=(9.2, 9.4), sharex=True)
+    runtime_ax, tiles_ax, correctness_ax = axes
 
-    ax2 = ax1.twinx()
-    ax2.plot(x, active_tiles, color="tab:red", marker="s", label="active tiles")
-    ax2.set_ylabel("active tiles", color="tab:red")
-    ax2.tick_params(axis="y", labelcolor="tab:red")
+    runtime_ax.plot(x, dense_ms, color="#1f77b4", marker="o", label="Dense convolution")
+    runtime_ax.plot(x, tiled_ms, color="#2ca02c", marker="s", label="Tiled convolution")
+    runtime_ax.set_ylabel("Latency (ms)")
+    runtime_ax.set_title(title)
+    runtime_ax.grid(True)
+    runtime_ax.legend(loc="best", ncol=2, frameon=True)
 
-    ax3 = ax1.twinx()
-    ax3.spines["right"].set_position(("axes", 1.12))
-    ax3.plot(x, correctness, color="tab:green", marker="^", label="mean abs diff")
-    ax3.set_ylabel("mean abs diff", color="tab:green")
-    ax3.tick_params(axis="y", labelcolor="tab:green")
+    tiles_ax.plot(x, active_tiles, color="#d62728", marker="o", label="Active tiles")
+    tiles_ax.set_ylabel("Tile count")
+    tiles_ax.grid(True)
+    tiles_ax.legend(loc="best", frameon=True)
 
-    lines = ax1.get_lines() + ax2.get_lines() + ax3.get_lines()
-    labels = [line.get_label() for line in lines]
-    ax1.legend(lines, labels, loc="upper left")
-    ax1.set_title(title)
-    ax1.grid(True, alpha=0.3)
+    correctness_ax.plot(x, correctness, color="#9467bd", marker="^", label="Mean absolute difference")
+    correctness_ax.set_xlabel(x_key.replace("_", " "))
+    correctness_ax.set_ylabel("Mean abs. diff.")
+    correctness_ax.grid(True)
+    correctness_ax.legend(loc="best", frameon=True)
+
+    for ax in axes:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+    fig.align_ylabels(axes)
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
