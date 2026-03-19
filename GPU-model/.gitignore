@@ -3,7 +3,6 @@ imagenet_val
 my_mobilenet_with_weights.pth
 __pycache__/
 generated_demo*/
-active_tile_pixel_one_image_sweep*/
 dataset_roi_frames*/
 active_tile_pixel_dataset_sweep*/
 *.npz
