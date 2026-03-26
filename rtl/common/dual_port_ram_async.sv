@@ -115,6 +115,9 @@ module dual_port_ram_async #(
                     if (a_en && a_we) begin
                         mem[a_addr] <= a_din;
                     end
+                end
+
+                always_ff @(posedge clk) begin
                     if (b_en && b_we) begin
                         mem[b_addr] <= b_din;
                     end
@@ -149,6 +152,9 @@ module dual_port_ram_async #(
                     if (a_en && a_we) begin
                         mem[a_addr] <= a_din;
                     end
+                end
+
+                always_ff @(posedge clk) begin
                     if (b_en && b_we) begin
                         mem[b_addr] <= b_din;
                     end
@@ -183,6 +189,9 @@ module dual_port_ram_async #(
                     if (a_en && a_we) begin
                         mem[a_addr] <= a_din;
                     end
+                end
+
+                always_ff @(posedge clk) begin
                     if (b_en && b_we) begin
                         mem[b_addr] <= b_din;
                     end

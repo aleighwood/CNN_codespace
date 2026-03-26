@@ -157,7 +157,17 @@ module mobilenet_v1_param_cache #(
     (* ram_style = "block" *) logic signed [WR_W-1:0] fc_zp_mem [0:FC_OUT_CH-1];
 
     localparam int PW_CACHE_DEPTH = PW_GROUP * MAX_PW_IN_CH;
-    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem [0:1][0:PW_CACHE_DEPTH-1];
+    localparam int PW_CACHE_BANKS = 4;
+    localparam int PW_CACHE_GROUPS_PER_BANK = (PW_GROUP + PW_CACHE_BANKS - 1) / PW_CACHE_BANKS;
+    localparam int PW_CACHE_BANK_DEPTH = PW_CACHE_GROUPS_PER_BANK * MAX_PW_IN_CH;
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem0_b0 [0:PW_CACHE_BANK_DEPTH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem0_b1 [0:PW_CACHE_BANK_DEPTH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem0_b2 [0:PW_CACHE_BANK_DEPTH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem0_b3 [0:PW_CACHE_BANK_DEPTH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem1_b0 [0:PW_CACHE_BANK_DEPTH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem1_b1 [0:PW_CACHE_BANK_DEPTH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem1_b2 [0:PW_CACHE_BANK_DEPTH-1];
+    (* ram_style = "ultra" *) logic signed [WR_W-1:0] pw_cache_mem1_b3 [0:PW_CACHE_BANK_DEPTH-1];
     logic [DIM_W-1:0] pw_cache_group [0:1];
     logic [DIM_W-1:0] pw_cache_layer [0:1];
     logic pw_cache_valid [0:1];
@@ -178,6 +188,10 @@ module mobilenet_v1_param_cache #(
     logic [DIM_W-1:0] pw_cache_oc_next2;
     logic pw_cache_load_two;
     int pw_cache_total;
+    int pw_cache_bank0;
+    int pw_cache_bank1;
+    int pw_cache_bank_addr0;
+    int pw_cache_bank_addr1;
     logic [DIM_W-1:0] pw_group_total;
     logic [DIM_W-1:0] pw_prefetch_group;
     logic pw_prefetch_valid;
@@ -194,16 +208,74 @@ module mobilenet_v1_param_cache #(
     logic [DIM_W-1:0] last_layer_idx;
     logic dbg_pw_en;
 
+    function automatic int pw_cache_bank_idx(input int group_oc);
+        int bank_idx;
+        begin
+            bank_idx = group_oc / PW_CACHE_GROUPS_PER_BANK;
+            if (bank_idx < 0) begin
+                bank_idx = 0;
+            end else if (bank_idx >= PW_CACHE_BANKS) begin
+                bank_idx = PW_CACHE_BANKS - 1;
+            end
+            pw_cache_bank_idx = bank_idx;
+        end
+    endfunction
+
+    function automatic int pw_cache_bank_addr_calc(
+        input int group_oc,
+        input int in_ch,
+        input int layer_in_c_i
+    );
+        int group_in_bank;
+        begin
+            group_in_bank = group_oc % PW_CACHE_GROUPS_PER_BANK;
+            pw_cache_bank_addr_calc = group_in_bank * layer_in_c_i + in_ch;
+        end
+    endfunction
+
+    function automatic logic signed [WR_W-1:0] pw_cache_rd_word(
+        input int cache_sel_i,
+        input int bank_i,
+        input int addr_i
+    );
+        begin
+            pw_cache_rd_word = '0;
+            case (cache_sel_i)
+                0: begin
+                    case (bank_i)
+                        0: pw_cache_rd_word = pw_cache_mem0_b0[addr_i];
+                        1: pw_cache_rd_word = pw_cache_mem0_b1[addr_i];
+                        2: pw_cache_rd_word = pw_cache_mem0_b2[addr_i];
+                        3: pw_cache_rd_word = pw_cache_mem0_b3[addr_i];
+                        default: pw_cache_rd_word = '0;
+                    endcase
+                end
+                1: begin
+                    case (bank_i)
+                        0: pw_cache_rd_word = pw_cache_mem1_b0[addr_i];
+                        1: pw_cache_rd_word = pw_cache_mem1_b1[addr_i];
+                        2: pw_cache_rd_word = pw_cache_mem1_b2[addr_i];
+                        3: pw_cache_rd_word = pw_cache_mem1_b3[addr_i];
+                        default: pw_cache_rd_word = '0;
+                    endcase
+                end
+                default: pw_cache_rd_word = '0;
+            endcase
+        end
+    endfunction
+
     initial begin
         if (PW_OC_PAR > PW_GROUP) begin
             $fatal(1, "PW_OC_PAR (%0d) must be <= PW_GROUP (%0d) for weight cache", PW_OC_PAR, PW_GROUP);
         end
+        if (PW_CACHE_BANKS <= 0) begin
+            $fatal(1, "PW_CACHE_BANKS must be > 0");
+        end
     end
 
     // Write port. wr_sel selects which memory bank to write.
-    always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-        end else if (wr_en) begin
+    always_ff @(posedge clk) begin
+        if (wr_en) begin
             case (wr_sel)
                 5'd0: if (wr_addr < CONV1_WEIGHT_DEPTH) conv1_weight_mem[wr_addr] <= wr_data;
                 5'd1: if (wr_addr < CONV1_OUT_CH) conv1_bias_acc_mem[wr_addr] <= wr_data;
@@ -497,12 +569,16 @@ module mobilenet_v1_param_cache #(
 
             for (j = 0; j < PW_IC_PAR; j = j + 1) begin
                 int in_ch;
+                int cache_bank;
+                int cache_bank_addr;
                 in_ch = pw_in_ch_idx + j;
                 w_addr = group_oc * layer_in_c + in_ch;
+                cache_bank = pw_cache_bank_idx(group_oc);
+                cache_bank_addr = pw_cache_bank_addr_calc(group_oc, in_ch, layer_in_c);
                 if (cache_ok && (in_ch < layer_in_c)) begin
-                    if (w_addr < PW_CACHE_DEPTH) begin
+                    if (w_addr < PW_CACHE_DEPTH && cache_bank_addr < PW_CACHE_BANK_DEPTH) begin
                         pw_weight_vec_c[(i*PW_IC_PAR + j)*DATA_W +: DATA_W] =
-                            pw_cache_mem[cache_sel][w_addr][DATA_W-1:0];
+                            pw_cache_rd_word(cache_sel, cache_bank, cache_bank_addr);
                     end
                 end
             end
@@ -686,7 +762,7 @@ module mobilenet_v1_param_cache #(
     endgenerate
 
     // Pointwise weight cache loader (double-buffered, grouped by PW_GROUP output channels).
-    always_ff @(posedge clk or negedge rst_n) begin
+    always_ff @(posedge clk) begin
         if (!rst_n) begin
             pw_cache_valid[0] <= 1'b0;
             pw_cache_valid[1] <= 1'b0;
@@ -734,19 +810,60 @@ module mobilenet_v1_param_cache #(
 
             if (pw_cache_load) begin
                 if (pw_cache_idx < pw_cache_total[WR_ADDR_W-1:0]) begin
-                    if (pw_cache_oc_global < layer_out_c && pw_cache_rom_addr < PW_WEIGHT_DEPTH) begin
-                        pw_cache_mem[pw_cache_load_sel][pw_cache_idx] <= pw_weight_mem[pw_cache_rom_addr];
-                    end else begin
-                        pw_cache_mem[pw_cache_load_sel][pw_cache_idx] <= '0;
-                    end
+                    case ({pw_cache_load_sel, pw_cache_bank0})
+                        3'd0: pw_cache_mem0_b0[pw_cache_bank_addr0] <=
+                            (pw_cache_oc_global < layer_out_c && pw_cache_rom_addr < PW_WEIGHT_DEPTH) ?
+                            pw_weight_mem[pw_cache_rom_addr] : '0;
+                        3'd1: pw_cache_mem0_b1[pw_cache_bank_addr0] <=
+                            (pw_cache_oc_global < layer_out_c && pw_cache_rom_addr < PW_WEIGHT_DEPTH) ?
+                            pw_weight_mem[pw_cache_rom_addr] : '0;
+                        3'd2: pw_cache_mem0_b2[pw_cache_bank_addr0] <=
+                            (pw_cache_oc_global < layer_out_c && pw_cache_rom_addr < PW_WEIGHT_DEPTH) ?
+                            pw_weight_mem[pw_cache_rom_addr] : '0;
+                        3'd3: pw_cache_mem0_b3[pw_cache_bank_addr0] <=
+                            (pw_cache_oc_global < layer_out_c && pw_cache_rom_addr < PW_WEIGHT_DEPTH) ?
+                            pw_weight_mem[pw_cache_rom_addr] : '0;
+                        3'd4: pw_cache_mem1_b0[pw_cache_bank_addr0] <=
+                            (pw_cache_oc_global < layer_out_c && pw_cache_rom_addr < PW_WEIGHT_DEPTH) ?
+                            pw_weight_mem[pw_cache_rom_addr] : '0;
+                        3'd5: pw_cache_mem1_b1[pw_cache_bank_addr0] <=
+                            (pw_cache_oc_global < layer_out_c && pw_cache_rom_addr < PW_WEIGHT_DEPTH) ?
+                            pw_weight_mem[pw_cache_rom_addr] : '0;
+                        3'd6: pw_cache_mem1_b2[pw_cache_bank_addr0] <=
+                            (pw_cache_oc_global < layer_out_c && pw_cache_rom_addr < PW_WEIGHT_DEPTH) ?
+                            pw_weight_mem[pw_cache_rom_addr] : '0;
+                        default: pw_cache_mem1_b3[pw_cache_bank_addr0] <=
+                            (pw_cache_oc_global < layer_out_c && pw_cache_rom_addr < PW_WEIGHT_DEPTH) ?
+                            pw_weight_mem[pw_cache_rom_addr] : '0;
+                    endcase
 
                     if (pw_cache_load_two) begin
-                        if (pw_cache_oc_global1 < layer_out_c && pw_cache_rom_addr1 < PW_WEIGHT_DEPTH) begin
-                            pw_cache_mem[pw_cache_load_sel][pw_cache_idx + 1'b1] <=
-                                pw_weight_mem[pw_cache_rom_addr1];
-                        end else begin
-                            pw_cache_mem[pw_cache_load_sel][pw_cache_idx + 1'b1] <= '0;
-                        end
+                        case ({pw_cache_load_sel, pw_cache_bank1})
+                            3'd0: pw_cache_mem0_b0[pw_cache_bank_addr1] <=
+                                (pw_cache_oc_global1 < layer_out_c && pw_cache_rom_addr1 < PW_WEIGHT_DEPTH) ?
+                                pw_weight_mem[pw_cache_rom_addr1] : '0;
+                            3'd1: pw_cache_mem0_b1[pw_cache_bank_addr1] <=
+                                (pw_cache_oc_global1 < layer_out_c && pw_cache_rom_addr1 < PW_WEIGHT_DEPTH) ?
+                                pw_weight_mem[pw_cache_rom_addr1] : '0;
+                            3'd2: pw_cache_mem0_b2[pw_cache_bank_addr1] <=
+                                (pw_cache_oc_global1 < layer_out_c && pw_cache_rom_addr1 < PW_WEIGHT_DEPTH) ?
+                                pw_weight_mem[pw_cache_rom_addr1] : '0;
+                            3'd3: pw_cache_mem0_b3[pw_cache_bank_addr1] <=
+                                (pw_cache_oc_global1 < layer_out_c && pw_cache_rom_addr1 < PW_WEIGHT_DEPTH) ?
+                                pw_weight_mem[pw_cache_rom_addr1] : '0;
+                            3'd4: pw_cache_mem1_b0[pw_cache_bank_addr1] <=
+                                (pw_cache_oc_global1 < layer_out_c && pw_cache_rom_addr1 < PW_WEIGHT_DEPTH) ?
+                                pw_weight_mem[pw_cache_rom_addr1] : '0;
+                            3'd5: pw_cache_mem1_b1[pw_cache_bank_addr1] <=
+                                (pw_cache_oc_global1 < layer_out_c && pw_cache_rom_addr1 < PW_WEIGHT_DEPTH) ?
+                                pw_weight_mem[pw_cache_rom_addr1] : '0;
+                            3'd6: pw_cache_mem1_b2[pw_cache_bank_addr1] <=
+                                (pw_cache_oc_global1 < layer_out_c && pw_cache_rom_addr1 < PW_WEIGHT_DEPTH) ?
+                                pw_weight_mem[pw_cache_rom_addr1] : '0;
+                            default: pw_cache_mem1_b3[pw_cache_bank_addr1] <=
+                                (pw_cache_oc_global1 < layer_out_c && pw_cache_rom_addr1 < PW_WEIGHT_DEPTH) ?
+                                pw_weight_mem[pw_cache_rom_addr1] : '0;
+                        endcase
                     end
 
                     if (pw_cache_idx + (pw_cache_load_two ? 2'd2 : 2'd1) >= pw_cache_total[WR_ADDR_W-1:0]) begin
@@ -776,7 +893,7 @@ module mobilenet_v1_param_cache #(
 
     always_comb begin
         pw_cache_total = PW_GROUP * layer_in_c;
-        pw_cache_load_two = (pw_cache_idx + 1'b1) < pw_cache_total[WR_ADDR_W-1:0];
+        pw_cache_load_two = 1'b0;
 
         if (pw_cache_ic_off == layer_in_c - 1'b1) begin
             pw_cache_ic_next1 = '0;
@@ -798,6 +915,10 @@ module mobilenet_v1_param_cache #(
         pw_cache_rom_addr = pw_w_base + (pw_cache_oc_global * layer_in_c) + pw_cache_ic_off;
         pw_cache_oc_global1 = pw_cache_load_group * PW_GROUP + pw_cache_oc_next1;
         pw_cache_rom_addr1 = pw_w_base + (pw_cache_oc_global1 * layer_in_c) + pw_cache_ic_next1;
+        pw_cache_bank0 = pw_cache_bank_idx(pw_cache_oc_off);
+        pw_cache_bank_addr0 = pw_cache_bank_addr_calc(pw_cache_oc_off, pw_cache_ic_off, layer_in_c);
+        pw_cache_bank1 = pw_cache_bank_idx(pw_cache_oc_next1);
+        pw_cache_bank_addr1 = pw_cache_bank_addr_calc(pw_cache_oc_next1, pw_cache_ic_next1, layer_in_c);
     end
 
     assign pw_group_ready = pw_cache_req_hit;
