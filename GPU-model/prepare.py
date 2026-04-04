@@ -163,5 +163,5 @@ def prepare_model_weights(save_path='my_mobilenet_with_weights.pth'):
 
 if __name__ == '__main__':
     prepare_model_weights()
-    download_imagenet_val()
+    # download_imagenet_val()
     print("\nDone. You can now run:  python mobile_net.py")
