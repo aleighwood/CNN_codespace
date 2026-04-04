@@ -3,6 +3,7 @@ import csv
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor
+from itertools import product
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -48,49 +49,68 @@ def _apply_plot_style() -> None:
     )
 
 
-def plot_sweep(rows: list[dict], x_key: str, title: str, output_path: Path) -> None:
+def plot_grid_overview(rows: list[dict], output_path: Path) -> None:
+    if not rows:
+        return
+
     _apply_plot_style()
-    x = [row[x_key] for row in rows]
-    sparse_ms = [row["sparse_ms"] for row in rows]
-    dense_masked_ms = [row["dense_masked_ms"] for row in rows]
-    dense_unmasked_ms = [row["dense_unmasked_ms"] for row in rows]
-    active_tiles = [row["active_tiles"] for row in rows]
-    active_ratio = [100.0 * row["active_ratio"] for row in rows]
-    sparse_top1 = [row["sparse_top1_acc"] for row in rows]
-    dense_masked_top1 = [row["dense_masked_top1_acc"] for row in rows]
-    dense_unmasked_top1 = [row["dense_unmasked_top1_acc"] for row in rows]
+    min_active_values = sorted({int(row["min_active_pixels"]) for row in rows})
+    tile_width_values = sorted({int(row["tile_width"]) for row in rows})
+    tile_height_values = sorted({int(row["tile_height"]) for row in rows})
+    row_lookup = {
+        (int(row["min_active_pixels"]), int(row["tile_width"]), int(row["tile_height"])): row
+        for row in rows
+    }
 
-    fig, axes = plt.subplots(3, 1, figsize=(9.2, 9.4), sharex=True)
+    metric_specs = [
+        ("sparse_ms", "Mean Sparse Latency (ms)", lambda row: float(row["sparse_ms"]), "viridis"),
+        ("active_ratio", "Mean Active Ratio (%)", lambda row: 100.0 * float(row["active_ratio"]), "magma_r"),
+        ("sparse_top1_acc", "Sparse Top-1 Accuracy (%)", lambda row: float(row["sparse_top1_acc"]), "plasma"),
+    ]
+    metric_ranges = []
+    for _, _, value_fn, _ in metric_specs:
+        values = [value_fn(row) for row in rows]
+        metric_ranges.append((min(values), max(values)))
 
-    runtime_ax, tiles_ax, acc_ax = axes
+    fig, axes = plt.subplots(
+        len(min_active_values),
+        len(metric_specs),
+        figsize=(11.2, 2.55 * len(min_active_values) + 0.6),
+        squeeze=False,
+    )
+    colorbar_images = [None] * len(metric_specs)
 
-    runtime_ax.plot(x, dense_unmasked_ms, color="#1f77b4", marker="o", label="Dense unmasked")
-    runtime_ax.plot(x, dense_masked_ms, color="#ff7f0e", marker="s", label="Dense masked")
-    runtime_ax.plot(x, sparse_ms, color="#2ca02c", marker="^", label="Sparse masked")
-    runtime_ax.set_ylabel("Mean latency (ms)")
-    runtime_ax.set_title(title)
-    runtime_ax.grid(True)
-    runtime_ax.legend(loc="best", ncol=3, frameon=True)
+    for col_idx, (_, title, _, _) in enumerate(metric_specs):
+        axes[0][col_idx].set_title(title)
 
-    tiles_ax.plot(x, active_tiles, color="#d62728", marker="o", label="Mean active tiles")
-    tiles_ax.plot(x, active_ratio, color="#9467bd", marker="s", label="Mean active ratio (%)")
-    tiles_ax.set_ylabel("Tile activity")
-    tiles_ax.grid(True)
-    tiles_ax.legend(loc="best", ncol=2, frameon=True)
+    for row_idx, min_active_pixels in enumerate(min_active_values):
+        for col_idx, (_, _, value_fn, cmap) in enumerate(metric_specs):
+            vmin, vmax = metric_ranges[col_idx]
+            grid = np.full((len(tile_height_values), len(tile_width_values)), np.nan, dtype=float)
+            for height_idx, tile_height in enumerate(tile_height_values):
+                for width_idx, tile_width in enumerate(tile_width_values):
+                    row = row_lookup.get((min_active_pixels, tile_width, tile_height))
+                    if row is not None:
+                        grid[height_idx, width_idx] = value_fn(row)
 
-    acc_ax.plot(x, dense_unmasked_top1, color="#1f77b4", marker="o", label="Dense unmasked top-1")
-    acc_ax.plot(x, dense_masked_top1, color="#ff7f0e", marker="s", label="Dense masked top-1")
-    acc_ax.plot(x, sparse_top1, color="#2ca02c", marker="^", label="Sparse masked top-1")
-    acc_ax.set_xlabel(x_key.replace("_", " "))
-    acc_ax.set_ylabel("Top-1 accuracy (%)")
-    acc_ax.grid(True)
-    acc_ax.legend(loc="best", ncol=3, frameon=True)
+            ax = axes[row_idx][col_idx]
+            image = ax.imshow(grid, origin="lower", aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
+            colorbar_images[col_idx] = image
+            ax.set_xticks(range(len(tile_width_values)))
+            ax.set_xticklabels(tile_width_values)
+            ax.set_yticks(range(len(tile_height_values)))
+            ax.set_yticklabels(tile_height_values)
+            ax.set_xlabel("tile width")
+            if col_idx == 0:
+                ax.set_ylabel(f"tile height\nminpix={min_active_pixels}")
+            else:
+                ax.set_ylabel("tile height")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+    for col_idx, image in enumerate(colorbar_images):
+        cbar = fig.colorbar(image, ax=axes[:, col_idx], fraction=0.025, pad=0.02)
+        cbar.ax.tick_params(labelsize=8)
 
-    for ax in axes:
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-
-    fig.align_ylabels(axes)
     fig.tight_layout()
     fig.savefig(output_path, dpi=160)
     plt.close(fig)
@@ -267,32 +287,22 @@ def evaluate_config(
     }
 
 
-def evaluate_sweep(
+def evaluate_grid(
     roi_input_paths: list[Path],
-    sweep_key: str,
-    sweep_values: list[int],
-    default_tile_width: int,
-    default_tile_height: int,
-    default_min_active_pixels: int,
+    tile_width_values: list[int],
+    tile_height_values: list[int],
+    min_active_pixel_values: list[int],
     tile_count_method: str,
     workers: int,
     runner: SparseMobileNetRunner,
 ) -> list[dict]:
     results = []
-    total_configs = len(sweep_values)
-    for config_index, sweep_value in enumerate(sweep_values, start=1):
-        tile_width = default_tile_width
-        tile_height = default_tile_height
-        min_active_pixels = default_min_active_pixels
-
-        if sweep_key == "tile_width":
-            tile_width = sweep_value
-        elif sweep_key == "tile_height":
-            tile_height = sweep_value
-        elif sweep_key == "min_active_pixels":
-            min_active_pixels = sweep_value
-
-        print(f"[{sweep_key}] config {config_index}/{total_configs}: value={sweep_value}")
+    configs = list(product(min_active_pixel_values, tile_width_values, tile_height_values))
+    total_configs = len(configs)
+    for config_index, (min_active_pixels, tile_width, tile_height) in enumerate(configs, start=1):
+        print(
+            f"[grid] config {config_index}/{total_configs}: min_active_pixels={min_active_pixels} tile_width={tile_width} tile_height={tile_height}"
+        )
         summary = evaluate_config(
             roi_input_paths=roi_input_paths,
             tile_width=tile_width,
@@ -302,10 +312,9 @@ def evaluate_sweep(
             workers=workers,
             runner=runner,
         )
-        summary[sweep_key] = sweep_value
         results.append(summary)
         print(
-            f"{sweep_key}={sweep_value}: dense_unmasked_top1={summary['dense_unmasked_top1_acc']:.2f}% dense_masked_top1={summary['dense_masked_top1_acc']:.2f}% sparse_top1={summary['sparse_top1_acc']:.2f}% sparse_ms={summary['sparse_ms']:.3f}"
+            f"min_active_pixels={min_active_pixels} tile_width={tile_width} tile_height={tile_height}: dense_unmasked_top1={summary['dense_unmasked_top1_acc']:.2f}% dense_masked_top1={summary['dense_masked_top1_acc']:.2f}% sparse_top1={summary['sparse_top1_acc']:.2f}% sparse_ms={summary['sparse_ms']:.3f}"
         )
     return results
 
@@ -324,9 +333,6 @@ def main() -> int:
     parser.add_argument("--weights", type=str, default="my_mobilenet_with_weights.pth")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--chunk-tiles", type=int, default=32)
-    parser.add_argument("--default-tile-width", type=int, default=16)
-    parser.add_argument("--default-tile-height", type=int, default=16)
-    parser.add_argument("--default-min-active-pixels", type=int, default=1)
     parser.add_argument("--tile-count-method", type=str, choices=["direct", "scanline"], default="direct")
     parser.add_argument("--workers", type=int, default=min(24, os.cpu_count() or 1))
     parser.add_argument("--min-active-pixels-start", type=int, default=1)
@@ -350,47 +356,19 @@ def main() -> int:
 
     runner = load_runner(args.weights, args.device, args.chunk_tiles)
 
-    threshold_rows = evaluate_sweep(
+    grid_rows = evaluate_grid(
         roi_input_paths=roi_input_paths,
-        sweep_key="min_active_pixels",
-        sweep_values=list(range(args.min_active_pixels_start, args.min_active_pixels_stop + 1)),
-        default_tile_width=args.default_tile_width,
-        default_tile_height=args.default_tile_height,
-        default_min_active_pixels=args.default_min_active_pixels,
-        tile_count_method=args.tile_count_method,
-        workers=args.workers,
-        runner=runner,
-    )
-    tile_width_rows = evaluate_sweep(
-        roi_input_paths=roi_input_paths,
-        sweep_key="tile_width",
-        sweep_values=list(range(args.tile_width_start, args.tile_width_stop + 1)),
-        default_tile_width=args.default_tile_width,
-        default_tile_height=args.default_tile_height,
-        default_min_active_pixels=args.default_min_active_pixels,
-        tile_count_method=args.tile_count_method,
-        workers=args.workers,
-        runner=runner,
-    )
-    tile_height_rows = evaluate_sweep(
-        roi_input_paths=roi_input_paths,
-        sweep_key="tile_height",
-        sweep_values=list(range(args.tile_height_start, args.tile_height_stop + 1)),
-        default_tile_width=args.default_tile_width,
-        default_tile_height=args.default_tile_height,
-        default_min_active_pixels=args.default_min_active_pixels,
+        tile_width_values=list(range(args.tile_width_start, args.tile_width_stop + 1)),
+        tile_height_values=list(range(args.tile_height_start, args.tile_height_stop + 1)),
+        min_active_pixel_values=list(range(args.min_active_pixels_start, args.min_active_pixels_stop + 1)),
         tile_count_method=args.tile_count_method,
         workers=args.workers,
         runner=runner,
     )
 
-    write_csv(output_dir / "threshold_sweep.csv", threshold_rows)
-    write_csv(output_dir / "tile_width_sweep.csv", tile_width_rows)
-    write_csv(output_dir / "tile_height_sweep.csv", tile_height_rows)
+    write_csv(output_dir / "grid_search.csv", grid_rows)
 
-    plot_sweep(threshold_rows, "min_active_pixels", "Dataset Sweep: Min Active Pixels", output_dir / "threshold_sweep.png")
-    plot_sweep(tile_width_rows, "tile_width", "Dataset Sweep: Tile Width", output_dir / "tile_width_sweep.png")
-    plot_sweep(tile_height_rows, "tile_height", "Dataset Sweep: Tile Height", output_dir / "tile_height_sweep.png")
+    plot_grid_overview(grid_rows, output_dir / "grid_search_overview.png")
 
     print(f"Processed images: {len(roi_input_paths)}")
     print(f"Saved dataset sweep outputs to: {output_dir}")

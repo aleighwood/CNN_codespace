@@ -4,7 +4,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from active_tile_pixel_dataset_sweep import plot_sweep
+from active_tile_pixel_dataset_sweep import plot_grid_overview
 from roi_tiles import calculate_tile_counts_direct
 
 
@@ -61,30 +61,18 @@ def _apply_plot_style() -> None:
     )
 
 
-def make_config_label(family: str, tile_width: int, tile_height: int, min_active_pixels: int) -> str:
-    if family == "threshold":
-        return f"minpix={min_active_pixels}"
-    if family == "tile_width":
-        return f"tile_w={tile_width}"
-    return f"tile_h={tile_height}"
+def make_config_label(tile_width: int, tile_height: int, min_active_pixels: int) -> str:
+    return f"w={tile_width}, h={tile_height}, minpix={min_active_pixels}"
 
 
 def load_dataset_sweep_rows() -> list[dict]:
-    rows = []
-    for csv_name, family in (
-        ("threshold_sweep.csv", "threshold"),
-        ("tile_width_sweep.csv", "tile_width"),
-        ("tile_height_sweep.csv", "tile_height"),
-    ):
-        for row in read_csv_rows(INPUT_DIR / csv_name):
-            row["family"] = family
-            row["config_label"] = make_config_label(
-                family=family,
-                tile_width=int(row["tile_width"]),
-                tile_height=int(row["tile_height"]),
-                min_active_pixels=int(row["min_active_pixels"]),
-            )
-            rows.append(row)
+    rows = read_csv_rows(INPUT_DIR / "grid_search.csv")
+    for row in rows:
+        row["config_label"] = make_config_label(
+            tile_width=int(row["tile_width"]),
+            tile_height=int(row["tile_height"]),
+            min_active_pixels=int(row["min_active_pixels"]),
+        )
     return rows
 
 
@@ -97,7 +85,6 @@ def compute_mean_coverage_by_config(sweep_rows: list[dict]) -> list[dict]:
     for row in sweep_rows:
         configs.append(
             {
-                "family": row["family"],
                 "config_label": row["config_label"],
                 "tile_width": int(row["tile_width"]),
                 "tile_height": int(row["tile_height"]),
@@ -138,7 +125,6 @@ def compute_mean_coverage_by_config(sweep_rows: list[dict]) -> list[dict]:
         mean_coverage = coverage_sums[idx] / total_images
         summary_rows.append(
             {
-                "family": config["family"],
                 "config_label": config["config_label"],
                 "tile_width": config["tile_width"],
                 "tile_height": config["tile_height"],
@@ -180,29 +166,31 @@ def spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
 
 def plot_coverage_efficiency(summary_rows: list[dict]) -> None:
     _apply_plot_style()
-    x = np.arange(len(summary_rows))
-    y = [100.0 * row["mean_coverage_efficiency"] for row in summary_rows]
-    labels = [row["config_label"] for row in summary_rows]
+    x = np.array([row["mean_active_tiles"] for row in summary_rows], dtype=float)
+    y = np.array([100.0 * row["mean_coverage_efficiency"] for row in summary_rows], dtype=float)
+    color = np.array([row["min_active_pixels"] for row in summary_rows], dtype=float)
+    size = np.array([row["tile_width"] * row["tile_height"] for row in summary_rows], dtype=float) * 0.7
 
-    family_colors = {"threshold": "#1f77b4", "tile_width": "#ff7f0e", "tile_height": "#2ca02c"}
-    colors = [family_colors[row["family"]] for row in summary_rows]
-
-    fig, ax = plt.subplots(figsize=(12.5, 5.8))
-    ax.bar(x, y, color=colors, edgecolor="black", linewidth=0.6)
-    ax.set_title("Mean Tile Coverage Efficiency by Configuration")
+    fig, ax = plt.subplots(figsize=(8.8, 6.2))
+    scatter = ax.scatter(
+        x,
+        y,
+        c=color,
+        s=size,
+        cmap="viridis",
+        edgecolors="black",
+        linewidths=0.4,
+        alpha=0.88,
+    )
+    ax.set_title("Coverage Efficiency vs Mean Active Tiles")
     ax.set_ylabel("Coverage efficiency (%)")
-    ax.set_xlabel("Configuration")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.grid(True, axis="y")
+    ax.set_xlabel("Mean active tiles")
+    ax.grid(True)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    legend_handles = [
-        plt.Line2D([0], [0], color=color, lw=6, label=family.replace("_", " "))
-        for family, color in family_colors.items()
-    ]
-    ax.legend(handles=legend_handles, loc="best", frameon=True, title="Sweep family")
+    cbar = fig.colorbar(scatter, ax=ax)
+    cbar.set_label("min active pixels")
     fig.tight_layout()
     fig.savefig(INPUT_DIR / "coverage_efficiency_by_config.png", dpi=160)
     plt.close(fig)
@@ -210,32 +198,24 @@ def plot_coverage_efficiency(summary_rows: list[dict]) -> None:
 
 def plot_runtime_vs_active_tiles(summary_rows: list[dict]) -> None:
     _apply_plot_style()
-    family_colors = {"threshold": "#1f77b4", "tile_width": "#ff7f0e", "tile_height": "#2ca02c"}
-    family_markers = {"threshold": "o", "tile_width": "s", "tile_height": "^"}
-
     x = np.array([row["mean_active_tiles"] for row in summary_rows], dtype=float)
     y = np.array([row["mean_sparse_ms"] for row in summary_rows], dtype=float)
+    color = np.array([row["min_active_pixels"] for row in summary_rows], dtype=float)
+    size = np.array([row["tile_width"] * row["tile_height"] for row in summary_rows], dtype=float) * 0.7
     pearson = pearson_corr(x, y)
     spearman = spearman_corr(x, y)
 
     fig, ax = plt.subplots(figsize=(8.8, 6.2))
-    for row in summary_rows:
-        ax.scatter(
-            row["mean_active_tiles"],
-            row["mean_sparse_ms"],
-            color=family_colors[row["family"]],
-            marker=family_markers[row["family"]],
-            s=70,
-            edgecolors="black",
-            linewidths=0.5,
-        )
-        ax.annotate(
-            row["config_label"],
-            (row["mean_active_tiles"], row["mean_sparse_ms"]),
-            textcoords="offset points",
-            xytext=(5, 5),
-            fontsize=8,
-        )
+    scatter = ax.scatter(
+        x,
+        y,
+        c=color,
+        s=size,
+        cmap="viridis",
+        edgecolors="black",
+        linewidths=0.4,
+        alpha=0.88,
+    )
 
     ax.set_title("Mean Sparse Latency vs Mean Active Tiles")
     ax.set_xlabel("Mean active tiles")
@@ -255,29 +235,21 @@ def plot_runtime_vs_active_tiles(summary_rows: list[dict]) -> None:
         bbox={"facecolor": "white", "edgecolor": "black", "boxstyle": "round,pad=0.35"},
     )
 
-    legend_handles = [
-        plt.Line2D([0], [0], color=family_colors[family], marker=family_markers[family], linestyle="", markersize=7, label=family.replace("_", " "))
-        for family in ("threshold", "tile_width", "tile_height")
-    ]
-    ax.legend(handles=legend_handles, loc="lower right", frameon=True, title="Sweep family")
+    cbar = fig.colorbar(scatter, ax=ax)
+    cbar.set_label("min active pixels")
     fig.tight_layout()
     fig.savefig(INPUT_DIR / "runtime_vs_active_tiles.png", dpi=160)
     plt.close(fig)
 
 
 def main() -> int:
-    for csv_name, x_key, title, png_name in (
-        ("threshold_sweep.csv", "min_active_pixels", "Dataset Sweep: Min Active Pixels", "threshold_sweep.png"),
-        ("tile_width_sweep.csv", "tile_width", "Dataset Sweep: Tile Width", "tile_width_sweep.png"),
-        ("tile_height_sweep.csv", "tile_height", "Dataset Sweep: Tile Height", "tile_height_sweep.png"),
-    ):
-        csv_path = INPUT_DIR / csv_name
-        if not csv_path.exists():
-            raise SystemExit(f"Missing CSV file: {csv_path}")
-        rows = read_csv_rows(csv_path)
-        if not rows:
-            raise SystemExit(f"CSV file is empty: {csv_path}")
-        plot_sweep(rows=rows, x_key=x_key, title=title, output_path=INPUT_DIR / png_name)
+    csv_path = INPUT_DIR / "grid_search.csv"
+    if not csv_path.exists():
+        raise SystemExit(f"Missing CSV file: {csv_path}")
+    rows = read_csv_rows(csv_path)
+    if not rows:
+        raise SystemExit(f"CSV file is empty: {csv_path}")
+    plot_grid_overview(rows=rows, output_path=INPUT_DIR / "grid_search_overview.png")
 
     sweep_rows = load_dataset_sweep_rows()
     summary_rows = compute_mean_coverage_by_config(sweep_rows)
