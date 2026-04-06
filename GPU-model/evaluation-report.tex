@@ -1,0 +1,123 @@
+\section{Evaluation}
+\label{sec:evaluation}
+
+\subsection{Setup and Metrics}
+We evaluate all configurations recorded in \texttt{active\_tile\_pixel\_dataset\_sweep/grid\_search.csv}. The sweep contains 125 settings, with
+$\texttt{tile\_width} \in \{14,15,16,17,18\}$,
+$\texttt{tile\_height} \in \{14,15,16,17,18\}$, and
+$\texttt{min\_active\_pixels} \in \{1,2,3,4,5\}$.
+Each configuration is evaluated on 50{,}000 images (\texttt{num\_images=50000}).
+
+We report three groups of metrics:
+(1) runtime (\texttt{sparse\_ms}, \texttt{dense\_masked\_ms}, \texttt{dense\_unmasked\_ms}),
+(2) tile activity (\texttt{active\_tiles}, \texttt{active\_ratio}), and
+(3) recognition quality (Top-1 accuracy fields in the CSV files).
+Coverage efficiency is computed from \texttt{config\_tile\_summary.csv} as the fraction of useful ROI pixels among pixels processed inside active tiles.
+
+\subsection{Overall Results}
+Across all 125 configurations, sparse latency ranges from \textbf{6.90 ms} to \textbf{14.16 ms} (mean \textbf{8.99 ms}).
+By comparison, dense masked latency is 2.15--4.07 ms (mean 2.65 ms), and dense unmasked latency is 1.42--2.87 ms (mean 1.81 ms).
+On average, the current sparse implementation is therefore \textbf{3.39$\times$ slower} than dense masked and \textbf{4.97$\times$ slower} than dense unmasked inference.
+
+Top-1 accuracy for sparse inference is very stable: 43.23\%--43.376\% (mean 43.330\%, std 0.026).
+Dense masked Top-1 is essentially constant at 43.342\%, while dense unmasked Top-1 stays at 66.82\%.
+This indicates that, in the current pipeline, most accuracy loss comes from masking/ROI selection rather than tile threshold tuning.
+
+Coverage efficiency varies from 62.88\% to 71.97\% (mean 67.35\%).
+The relation between active tile count and sparse runtime is weak (Pearson $r=-0.052$, Spearman $\rho=-0.041$), suggesting runtime is not explained by active tile count alone.
+
+\subsection{Effect of \texttt{min\_active\_pixels}}
+Averaging over all tile-width/height pairs:
+threshold 1 gives 9.78 ms latency and 66.01\% coverage efficiency;
+threshold 4 gives the best average latency (8.15 ms) with 68.00\% coverage;
+threshold 5 further improves coverage to 68.46\% but increases latency to 8.69 ms.
+Sparse Top-1 accuracy changes only slightly (43.341\% at threshold 1 vs 43.307\% at threshold 5, i.e., 0.034\% absolute drop).
+
+\begin{table}[t]
+\centering
+\caption{Representative configurations from the full grid search.}
+\label{tab:eval-best-configs}
+\begin{tabular}{lcccc}
+\hline
+Config $(w,h,m)$ & Sparse ms & Coverage (\%) & Active tiles & Sparse Top-1 (\%) \\
+\hline
+Fastest: $(14,14,4)$ & 6.90 & 71.46 & 106.36 & 43.338 \\
+Highest coverage: $(14,14,5)$ & 7.28 & 71.97 & 105.51 & 43.362 \\
+Worst latency: $(15,18,3)$ & 14.16 & 66.65 & 92.44 & 43.328 \\
+\hline
+\end{tabular}
+\end{table}
+
+The Pareto frontier in (latency, coverage efficiency) is small and dominated by two nearby points:
+$(14,14,4)$ and $(14,14,5)$.
+The first is the speed-oriented choice, while the second is the coverage-oriented choice.
+
+\subsection{Kernel-Level Profiling and Dense-Tiled Control}
+To understand why sparse inference is still slower than dense inference, we ran an additional micro-benchmark
+(\texttt{smallest-test.py}) on an NVIDIA GeForce RTX 5070 with CUDA profiling enabled.
+The run used 120 images, 4 representative configurations
+($(14,14,4)$, $(14,14,5)$, $(16,16,1)$, $(15,18,3)$),
+and chunk sizes from 32 to 2048.
+Raw logs are stored in \texttt{smallest-test-result.txt}.
+
+We added a control path called \textit{dense-tiled via sparse path}:
+it executes the same tile extraction/writeback pipeline as sparse inference, but with all tiles active.
+This isolates implementation overhead from sparsity benefit.
+
+\begin{table}[t]
+\centering
+\caption{Profiler-derived launch counts and timing summary from \texttt{smallest-test.py}.}
+\label{tab:kernel-profile-summary}
+\begin{tabular}{lccc}
+\hline
+Metric & Sparse path & Dense-tiled path & Dense unmasked \\
+\hline
+Captured CUDA events (min--max) & 1245--1416 & 2001--2259 & 279 \\
+Captured CUDA events (mean) & 1311 & 2071 & 279 \\
+Forward mean ms (all chunks/configs) & 10.27 & 12.67 & 1.87 \\
+\hline
+\end{tabular}
+\end{table}
+
+Key observations are:
+(1) launch volume is much higher on tiled paths than on dense unmasked inference;
+(2) sparse is generally faster than dense-tiled once chunk size is large enough (indicating real pruning benefit inside the same execution path);
+but
+(3) both tiled paths remain far slower than the dense unmasked path.
+Across all runs, dense-tiled is on average 6.87$\times$ slower than dense unmasked (range 5.59$\times$--8.44$\times$).
+This indicates that the dominant bottleneck is tiled execution overhead (many small kernels and tensor movement), not just arithmetic count.
+
+Chunk size tuning helps but does not close the gap.
+Averaged over the 4 benchmarked configurations, sparse forward time drops from 15.32 ms at \texttt{chunk\_tiles=32}
+to 7.78 ms at \texttt{chunk\_tiles=2048} (about 1.97$\times$ speedup),
+yet remains substantially above dense unmasked (1.69 ms at \texttt{chunk\_tiles=2048} benchmark block).
+
+Profiler kernel names further support this interpretation:
+the sparse/tiled paths are dominated by repeated elementwise copy/fill kernels and batched copy/scatter-style kernels
+(\texttt{direct\_copy\_kernel\_cuda}, \texttt{FillFunctor}, \texttt{CatArrayBatchedCopy}, clamp/mul elementwise ops),
+whereas dense unmasked inference uses a much smaller launch set dominated by optimized convolution/Bn kernels.
+
+\subsection{Visual Analysis}
+Figure~\ref{fig:grid-overview} summarizes the full parameter sweep.
+Figure~\ref{fig:coverage-scatter} and Figure~\ref{fig:runtime-scatter} show that higher coverage can often be achieved without large accuracy changes, while runtime behavior is more irregular than a simple linear function of active tile count.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{active_tile_pixel_dataset_sweep/grid_search_overview.png}
+\caption{Grid-search heatmaps for sparse latency, active ratio, and sparse Top-1 accuracy.}
+\label{fig:grid-overview}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.92\linewidth]{active_tile_pixel_dataset_sweep/coverage_efficiency_by_config.png}
+\caption{Coverage efficiency versus mean active tiles across all configurations.}
+\label{fig:coverage-scatter}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.92\linewidth]{active_tile_pixel_dataset_sweep/runtime_vs_active_tiles.png}
+\caption{Sparse runtime versus mean active tiles with correlation statistics and trend line.}
+\label{fig:runtime-scatter}
+\end{figure}

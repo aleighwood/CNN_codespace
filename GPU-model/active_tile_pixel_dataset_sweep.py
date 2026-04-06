@@ -30,20 +30,21 @@ def write_csv(path: Path, rows: list[dict]) -> None:
 def _apply_plot_style() -> None:
     plt.rcParams.update(
         {
-            "font.family": "serif",
-            "font.size": 11,
-            "axes.titlesize": 13,
+            "font.family": "DejaVu Sans",
+            "font.size": 10.5,
+            "axes.titlesize": 13.5,
+            "axes.titleweight": "semibold",
             "axes.labelsize": 11,
             "legend.fontsize": 10,
             "xtick.labelsize": 10,
             "ytick.labelsize": 10,
-            "axes.linewidth": 0.9,
+            "axes.linewidth": 0.8,
             "grid.linewidth": 0.6,
             "grid.alpha": 0.28,
             "lines.linewidth": 1.8,
             "lines.markersize": 5.5,
             "figure.facecolor": "white",
-            "axes.facecolor": "white",
+            "axes.facecolor": "#fbfcfd",
             "savefig.facecolor": "white",
         }
     )
@@ -63,28 +64,30 @@ def plot_grid_overview(rows: list[dict], output_path: Path) -> None:
     }
 
     metric_specs = [
-        ("sparse_ms", "Mean Sparse Latency (ms)", lambda row: float(row["sparse_ms"]), "viridis"),
-        ("active_ratio", "Mean Active Ratio (%)", lambda row: 100.0 * float(row["active_ratio"]), "magma_r"),
-        ("sparse_top1_acc", "Sparse Top-1 Accuracy (%)", lambda row: float(row["sparse_top1_acc"]), "plasma"),
+        ("sparse_ms", "Mean Sparse Latency (ms)", lambda row: float(row["sparse_ms"]), "YlGnBu", "{:.2f}"),
+        ("active_ratio", "Mean Active Ratio (%)", lambda row: 100.0 * float(row["active_ratio"]), "YlOrRd", "{:.1f}"),
+        ("sparse_top1_acc", "Sparse Top-1 Accuracy (%)", lambda row: float(row["sparse_top1_acc"]), "PuBuGn", "{:.3f}"),
     ]
     metric_ranges = []
-    for _, _, value_fn, _ in metric_specs:
+    for _, _, value_fn, _, _ in metric_specs:
         values = [value_fn(row) for row in rows]
         metric_ranges.append((min(values), max(values)))
 
     fig, axes = plt.subplots(
         len(min_active_values),
         len(metric_specs),
-        figsize=(11.2, 2.55 * len(min_active_values) + 0.6),
+        figsize=(12.8, 2.95 * len(min_active_values) + 0.8),
         squeeze=False,
+        constrained_layout=True,
     )
+    fig.suptitle("Grid Search Overview", fontsize=14.5, fontweight="semibold")
     colorbar_images = [None] * len(metric_specs)
 
-    for col_idx, (_, title, _, _) in enumerate(metric_specs):
+    for col_idx, (_, title, _, _, _) in enumerate(metric_specs):
         axes[0][col_idx].set_title(title)
 
     for row_idx, min_active_pixels in enumerate(min_active_values):
-        for col_idx, (_, _, value_fn, cmap) in enumerate(metric_specs):
+        for col_idx, (_, _, value_fn, cmap, value_format) in enumerate(metric_specs):
             vmin, vmax = metric_ranges[col_idx]
             grid = np.full((len(tile_height_values), len(tile_width_values)), np.nan, dtype=float)
             for height_idx, tile_height in enumerate(tile_height_values):
@@ -102,17 +105,51 @@ def plot_grid_overview(rows: list[dict], output_path: Path) -> None:
             ax.set_yticklabels(tile_height_values)
             ax.set_xlabel("tile width")
             if col_idx == 0:
-                ax.set_ylabel(f"tile height\nminpix={min_active_pixels}")
+                ax.set_ylabel("tile height")
+                ax.text(
+                    -0.52,
+                    0.5,
+                    f"minpix={min_active_pixels}",
+                    transform=ax.transAxes,
+                    rotation=90,
+                    va="center",
+                    ha="center",
+                    fontsize=10,
+                    color="#374151",
+                )
             else:
                 ax.set_ylabel("tile height")
+
+            ax.set_xticks(np.arange(-0.5, len(tile_width_values), 1), minor=True)
+            ax.set_yticks(np.arange(-0.5, len(tile_height_values), 1), minor=True)
+            ax.grid(which="minor", color="white", linestyle="-", linewidth=0.85, alpha=0.9)
+            ax.tick_params(which="minor", bottom=False, left=False)
+
+            denom = max(1e-12, vmax - vmin)
+            for height_idx in range(len(tile_height_values)):
+                for width_idx in range(len(tile_width_values)):
+                    value = grid[height_idx, width_idx]
+                    if np.isnan(value):
+                        continue
+                    normalized = (value - vmin) / denom
+                    text_color = "white" if normalized >= 0.62 else "#111827"
+                    ax.text(
+                        width_idx,
+                        height_idx,
+                        value_format.format(value),
+                        ha="center",
+                        va="center",
+                        fontsize=7.1,
+                        color=text_color,
+                    )
+
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
     for col_idx, image in enumerate(colorbar_images):
-        cbar = fig.colorbar(image, ax=axes[:, col_idx], fraction=0.025, pad=0.02)
-        cbar.ax.tick_params(labelsize=8)
+        cbar = fig.colorbar(image, ax=axes[:, col_idx], fraction=0.025, pad=0.02, shrink=0.98)
+        cbar.ax.tick_params(labelsize=8.5)
 
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=160)
+    fig.savefig(output_path, dpi=220)
     plt.close(fig)
 
 
