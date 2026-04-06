@@ -79,6 +79,68 @@ Forward mean ms (all chunks/configs) & 10.27 & 12.67 & 1.87 \\
 \end{tabular}
 \end{table}
 
+\begin{table}[t]
+\centering
+\caption{Chunk-size sweep averages over 4 representative configurations from \texttt{smallest-test-result.txt}.}
+\label{tab:chunk-sweep-avg}
+\begin{tabular}{rcccccc}
+\hline
+\texttt{chunk\_tiles} & Sparse ms & Dense-tiled ms & Dense-unmasked ms & Sparse/Dense-tiled & Dense-tiled/Dense & Sparse/Dense \\
+\hline
+32   & 15.322 & 13.988 & 1.905 & 1.051 & 7.353 & 7.752 \\
+64   & 12.677 & 13.266 & 2.026 & 0.963 & 6.782 & 6.627 \\
+128  & 8.954  & 12.194 & 1.870 & 0.735 & 6.582 & 4.833 \\
+256  & 9.316  & 12.886 & 1.883 & 0.716 & 6.994 & 4.979 \\
+512  & 8.685  & 12.124 & 1.803 & 0.721 & 6.654 & 4.790 \\
+1024 & 9.132  & 12.813 & 1.935 & 0.708 & 6.760 & 4.777 \\
+2048 & 7.784  & 11.416 & 1.685 & 0.687 & 6.936 & 4.733 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\scriptsize
+\caption{Detailed forward-mean measurements for all tested chunk/config combinations (from \texttt{smallest-test-result.txt}).}
+\label{tab:chunk-sweep-detailed}
+\resizebox{\linewidth}{!}{
+\begin{tabular}{rrrrrrrrrr}
+\hline
+\texttt{chunk\_tiles} & $w$ & $h$ & $m$ & Sparse ms & Dense-tiled ms & Dense-unmasked ms & Sparse/Dense-tiled & Dense-tiled/Dense & Sparse/Dense \\
+\hline
+32 & 14 & 14 & 4 & 20.666 & 17.352 & 2.645 & 1.191 & 6.561 & 7.814 \\
+32 & 14 & 14 & 5 & 5.630 & 7.448 & 1.090 & 0.756 & 6.834 & 5.165 \\
+32 & 15 & 18 & 3 & 17.218 & 16.476 & 1.998 & 1.045 & 8.248 & 8.620 \\
+32 & 16 & 16 & 1 & 17.776 & 14.676 & 1.889 & 1.211 & 7.769 & 9.409 \\
+64 & 14 & 14 & 4 & 13.844 & 10.983 & 1.415 & 1.260 & 7.760 & 9.782 \\
+64 & 14 & 14 & 5 & 11.214 & 14.403 & 2.579 & 0.779 & 5.585 & 4.349 \\
+64 & 15 & 18 & 3 & 8.954 & 11.147 & 1.495 & 0.803 & 7.456 & 5.989 \\
+64 & 16 & 16 & 1 & 16.694 & 16.532 & 2.613 & 1.010 & 6.327 & 6.389 \\
+128 & 14 & 14 & 4 & 9.140 & 12.535 & 2.000 & 0.729 & 6.267 & 4.570 \\
+128 & 14 & 14 & 5 & 10.115 & 14.024 & 2.211 & 0.721 & 6.342 & 4.574 \\
+128 & 15 & 18 & 3 & 7.823 & 10.853 & 1.456 & 0.721 & 7.452 & 5.372 \\
+128 & 16 & 16 & 1 & 8.737 & 11.363 & 1.814 & 0.769 & 6.265 & 4.817 \\
+256 & 14 & 14 & 4 & 7.435 & 9.931 & 1.573 & 0.749 & 6.313 & 4.727 \\
+256 & 14 & 14 & 5 & 6.484 & 9.679 & 1.326 & 0.670 & 7.297 & 4.888 \\
+256 & 15 & 18 & 3 & 8.191 & 11.990 & 1.500 & 0.683 & 7.996 & 5.463 \\
+256 & 16 & 16 & 1 & 15.154 & 19.945 & 3.132 & 0.760 & 6.369 & 4.839 \\
+512 & 14 & 14 & 4 & 6.864 & 8.812 & 1.396 & 0.779 & 6.315 & 4.918 \\
+512 & 14 & 14 & 5 & 7.002 & 10.498 & 1.605 & 0.667 & 6.540 & 4.362 \\
+512 & 15 & 18 & 3 & 12.051 & 17.276 & 2.388 & 0.698 & 7.236 & 5.047 \\
+512 & 16 & 16 & 1 & 8.825 & 11.910 & 1.825 & 0.741 & 6.525 & 4.835 \\
+1024 & 14 & 14 & 4 & 5.455 & 7.885 & 1.121 & 0.692 & 7.035 & 4.867 \\
+1024 & 14 & 14 & 5 & 6.345 & 8.699 & 1.391 & 0.729 & 6.253 & 4.561 \\
+1024 & 15 & 18 & 3 & 8.038 & 11.776 & 1.573 & 0.683 & 7.487 & 5.111 \\
+1024 & 16 & 16 & 1 & 16.690 & 22.892 & 3.654 & 0.729 & 6.266 & 4.568 \\
+2048 & 14 & 14 & 4 & 11.255 & 16.278 & 2.712 & 0.691 & 6.002 & 4.150 \\
+2048 & 14 & 14 & 5 & 5.852 & 8.387 & 1.288 & 0.698 & 6.513 & 4.544 \\
+2048 & 15 & 18 & 3 & 7.460 & 12.267 & 1.454 & 0.608 & 8.436 & 5.130 \\
+2048 & 16 & 16 & 1 & 6.570 & 8.733 & 1.286 & 0.752 & 6.792 & 5.109 \\
+\hline
+\end{tabular}
+}
+\end{table}
+
 Key observations are:
 (1) launch volume is much higher on tiled paths than on dense unmasked inference;
 (2) sparse is generally faster than dense-tiled once chunk size is large enough (indicating real pruning benefit inside the same execution path);
