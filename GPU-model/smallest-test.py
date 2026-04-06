@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
 import time
 from pathlib import Path
 
@@ -90,6 +91,12 @@ def print_env(device: torch.device) -> None:
     print()
 
 
+def maybe_disable_cudnn_context(disable: bool):
+    if disable:
+        return torch.backends.cudnn.flags(enabled=False, benchmark=False)
+    return contextlib.nullcontext()
+
+
 def make_dense_tiled_masks(pixel_masks: list[np.ndarray], tile_masks: list[np.ndarray]) -> tuple[list[np.ndarray], list[np.ndarray]]:
     dense_pixel_masks = [np.ones_like(pixel_mask, dtype=np.uint8) for pixel_mask in pixel_masks]
     dense_tile_masks = [np.ones_like(tile_mask, dtype=np.uint8) for tile_mask in tile_masks]
@@ -151,9 +158,9 @@ def estimate_sparse_launch_counts(
     return patch_batches, conv_kernel_lb, rough_op_launches
 
 
-def profile_callable(fn, device: torch.device, iters: int, topk: int) -> tuple[int, list[tuple[str, int, float]], str]:
+def profile_callable(fn, device: torch.device, iters: int, topk: int) -> tuple[int, list[tuple[str, int, float]]]:
     if device.type != "cuda":
-        return 0, [], ""
+        return 0, []
 
     sync_if_cuda(device)
     with torch.profiler.profile(
@@ -187,11 +194,33 @@ def profile_callable(fn, device: torch.device, iters: int, topk: int) -> tuple[i
         reverse=True,
     )[:topk]
 
-    op_table = prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=topk)
-    return len(cuda_events), top_kernel_rows, op_table
+    return len(cuda_events), top_kernel_rows
 
 
-def print_profile_summary(label: str, total_cuda_events: int, rows: list[tuple[str, int, float]], op_table: str) -> None:
+def _compact_kernel_name(name: str) -> str:
+    key_patterns = [
+        "direct_copy_kernel_cuda",
+        "FillFunctor",
+        "CatArrayBatchedCopy",
+        "conv_depthwise2d_forward_kernel",
+        "bn_fw_inf_1C11_kernel_NCHW",
+        "cutlass::Kernel2",
+        "nchwToNhwcKernel",
+        "implicit_convolve_sgemm",
+        "magma_sgemmEx_kernel",
+        "Memcpy DtoD",
+        "MulFunctor",
+        "launch_clamp_scalar",
+    ]
+    for pattern in key_patterns:
+        if pattern in name:
+            return pattern
+    if len(name) > 96:
+        return name[:93] + "..."
+    return name
+
+
+def print_profile_summary(label: str, total_cuda_events: int, rows: list[tuple[str, int, float]]) -> None:
     print(f"[profile] {label}")
     print(f"  captured CUDA events (kernel launches): {total_cuda_events}")
     if not rows:
@@ -200,10 +229,9 @@ def print_profile_summary(label: str, total_cuda_events: int, rows: list[tuple[s
 
     print("  top CUDA kernel names by self CUDA time:")
     for name, count, time_us in rows:
-        print(f"    count={count:4d}, self_cuda_ms={time_us / 1000.0:9.3f}, name={name}")
-
-    print("  top operator table (PyTorch profiler):")
-    print(op_table)
+        print(
+            f"    count={count:4d}, self_cuda_ms={time_us / 1000.0:8.3f}, name={_compact_kernel_name(name)}"
+        )
 
 
 def main() -> int:
@@ -223,7 +251,23 @@ def main() -> int:
     parser.add_argument("--warmup-images", type=int, default=8)
     parser.add_argument("--profile-kernels", action="store_true", help="run torch profiler to print real CUDA event names/counts")
     parser.add_argument("--profile-iters", type=int, default=5, help="iterations per profiled forward")
-    parser.add_argument("--profile-topk", type=int, default=20, help="top rows to print from profiler summaries")
+    parser.add_argument("--profile-topk", type=int, default=8, help="top kernel rows to print from profiler summaries")
+    parser.add_argument(
+        "--profile-max-configs-per-chunk",
+        type=int,
+        default=1,
+        help="max profiled configs per chunk (set 0 to disable profiling output)",
+    )
+    parser.add_argument(
+        "--disable-cudnn-all",
+        action="store_true",
+        help="disable cuDNN globally for all paths (for fairness experiments)",
+    )
+    parser.add_argument(
+        "--disable-cudnn-dense-baselines",
+        action="store_true",
+        help="disable cuDNN only for dense_masked and dense_unmasked baseline calls",
+    )
     parser.add_argument(
         "--tile-configs",
         type=str,
@@ -247,7 +291,10 @@ def main() -> int:
     first_runner, device = load_runner(args.weights, args.device, chunk_values[0])
     del first_runner
 
-    if device.type == "cuda":
+    if args.disable_cudnn_all:
+        torch.backends.cudnn.enabled = False
+        torch.backends.cudnn.benchmark = False
+    elif device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
     print_env(device)
@@ -257,6 +304,8 @@ def main() -> int:
     print(f"chunk_tiles list: {chunk_values}")
     print(f"tile_count_method: {args.tile_count_method}")
     print(f"configs: {configs}")
+    print(f"disable_cudnn_all: {args.disable_cudnn_all}")
+    print(f"disable_cudnn_dense_baselines: {args.disable_cudnn_dense_baselines}")
     print("kernel launch estimate lines are algorithmic; profiler lines are real captured CUDA events")
     print()
 
@@ -266,6 +315,15 @@ def main() -> int:
         for chunk_tiles in chunk_values:
             runner, _ = load_runner(args.weights, args.device, chunk_tiles)
             print(f"===== chunk_tiles={chunk_tiles} =====")
+            profiled_configs_count = 0
+
+            def run_dense_masked_baseline(x_masked: torch.Tensor, pixel_masks: list[np.ndarray]) -> torch.Tensor:
+                with maybe_disable_cudnn_context(args.disable_cudnn_dense_baselines):
+                    return runner.dense_semantic_forward(x_masked, pixel_masks)
+
+            def run_dense_unmasked_baseline(x_unmasked: torch.Tensor) -> torch.Tensor:
+                with maybe_disable_cudnn_context(args.disable_cudnn_dense_baselines):
+                    return runner.dense_unmasked_forward(x_unmasked)
 
             for (tile_w, tile_h, minpix) in configs:
                 print(f"--- Config w={tile_w}, h={tile_h}, minpix={minpix} ---")
@@ -285,10 +343,16 @@ def main() -> int:
                     x_unmasked = image_to_normalized_tensor(bundle["rgb"], device)
                     runner.sparse_forward(x_masked, pixel_masks, tile_masks, tile_w, tile_h)
                     runner.sparse_forward(x_unmasked, dense_pixel_masks, dense_tile_masks, tile_w, tile_h)
-                    runner.dense_semantic_forward(x_masked, pixel_masks)
-                    runner.dense_unmasked_forward(x_unmasked)
+                    run_dense_masked_baseline(x_masked, pixel_masks)
+                    run_dense_unmasked_baseline(x_unmasked)
 
-                if args.profile_kernels and device.type == "cuda":
+                should_profile = (
+                    args.profile_kernels
+                    and device.type == "cuda"
+                    and args.profile_max_configs_per_chunk > 0
+                    and profiled_configs_count < args.profile_max_configs_per_chunk
+                )
+                if should_profile:
                     pixel_masks_sample, tile_masks_sample = build_layer_masks(
                         roi_mask=sample_bundle["roi_mask"],
                         tile_width=tile_w,
@@ -302,7 +366,7 @@ def main() -> int:
                     x_masked_sample = image_to_normalized_tensor(sample_bundle["masked_rgb"], device)
                     x_unmasked_sample = image_to_normalized_tensor(sample_bundle["rgb"], device)
 
-                    total, rows, table = profile_callable(
+                    total, rows = profile_callable(
                         lambda: runner.sparse_forward(
                             x_masked_sample, pixel_masks_sample, tile_masks_sample, tile_w, tile_h
                         ),
@@ -310,9 +374,9 @@ def main() -> int:
                         args.profile_iters,
                         args.profile_topk,
                     )
-                    print_profile_summary("sparse_forward", total, rows, table)
+                    print_profile_summary("sparse_forward", total, rows)
 
-                    total, rows, table = profile_callable(
+                    total, rows = profile_callable(
                         lambda: runner.sparse_forward(
                             x_unmasked_sample,
                             dense_pixel_masks_sample,
@@ -324,15 +388,16 @@ def main() -> int:
                         args.profile_iters,
                         args.profile_topk,
                     )
-                    print_profile_summary("dense_tiled_via_sparse_forward", total, rows, table)
+                    print_profile_summary("dense_tiled_via_sparse_forward", total, rows)
 
-                    total, rows, table = profile_callable(
-                        lambda: runner.dense_unmasked_forward(x_unmasked_sample),
+                    total, rows = profile_callable(
+                        lambda: run_dense_unmasked_baseline(x_unmasked_sample),
                         device,
                         args.profile_iters,
                         args.profile_topk,
                     )
-                    print_profile_summary("dense_unmasked_forward", total, rows, table)
+                    print_profile_summary("dense_unmasked_forward", total, rows)
+                    profiled_configs_count += 1
 
                 io_ms: list[float] = []
                 mask_build_ms: list[float] = []
@@ -436,10 +501,8 @@ def main() -> int:
                         )
                     )
 
-                    dense_masked_ms.append(
-                        timed_ms(lambda: runner.dense_semantic_forward(x_masked, pixel_masks), device)
-                    )
-                    dense_unmasked_ms.append(timed_ms(lambda: runner.dense_unmasked_forward(x_unmasked), device))
+                    dense_masked_ms.append(timed_ms(lambda: run_dense_masked_baseline(x_masked, pixel_masks), device))
+                    dense_unmasked_ms.append(timed_ms(lambda: run_dense_unmasked_baseline(x_unmasked), device))
 
                 io_mean, io_p50, io_p95, _ = stats(io_ms)
                 mb_mean, mb_p50, mb_p95, _ = stats(mask_build_ms)
