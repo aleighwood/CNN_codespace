@@ -1,0 +1,51 @@
+{
+  "platform": {
+    "is_jetson": false,
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "python": "3.12.3",
+    "torch": "2.11.0+cu130",
+    "device": "cpu",
+    "cuda_available": false,
+    "gpu_name": null
+  },
+  "config": {
+    "roi_dir": "Jetson-run/samples",
+    "num_images": 5,
+    "tile_width": 14,
+    "tile_height": 14,
+    "min_active_pixels": 4,
+    "chunk_tiles": 64,
+    "tile_count_method": "direct",
+    "warmup_iters": 1,
+    "iters": 2,
+    "mean_active_ratio": 0.5852272727272727
+  },
+  "results": {
+    "sparse": {
+      "mode": "sparse",
+      "num_inferences": 10,
+      "total_time_s": 0.17047143700006018,
+      "avg_latency_ms": 17.047143700006018,
+      "throughput_inf_per_s": 58.66085354813117,
+      "power_backend": "unavailable",
+      "power_backend_details": "CPU run (no GPU power telemetry)",
+      "power_sample_count": 0,
+      "avg_power_w": null,
+      "energy_j": null,
+      "energy_per_inf_mj": null
+    },
+    "dense_tiled": {
+      "mode": "dense_tiled",
+      "num_inferences": 10,
+      "total_time_s": 0.26618912300000375,
+      "avg_latency_ms": 26.618912300000375,
+      "throughput_inf_per_s": 37.56727505353349,
+      "power_backend": "unavailable",
+      "power_backend_details": "CPU run (no GPU power telemetry)",
+      "power_sample_count": 0,
+      "avg_power_w": null,
+      "energy_j": null,
+      "energy_per_inf_mj": null
+    }
+  }
+}
