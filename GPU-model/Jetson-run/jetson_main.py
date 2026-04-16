@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 
 import argparse
 import glob
@@ -8,9 +7,8 @@ import platform
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple, NamedTuple
 
 import numpy as np
 import torch
@@ -23,20 +21,24 @@ from mobile_net import MobileNetV1
 from sparse_mobilenet import SparseMobileNetRunner, build_layer_masks, image_to_normalized_tensor
 
 
-@dataclass
-class PreparedSample:
+class PreparedSample(NamedTuple):
     key: str
     x_masked: torch.Tensor
-    pixel_masks: list[np.ndarray]
-    tile_masks: list[np.ndarray]
-    dense_pixel_masks: list[np.ndarray]
-    dense_tile_masks: list[np.ndarray]
+    pixel_masks: List[np.ndarray]
+    tile_masks: List[np.ndarray]
+    dense_pixel_masks: List[np.ndarray]
+    dense_tile_masks: List[np.ndarray]
     active_ratio: float
 
 
 def sync_if_cuda(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(device)
+
+
+def inference_context():
+    context_factory = getattr(torch, "inference_mode", torch.no_grad)
+    return context_factory()
 
 
 def detect_jetson_platform() -> bool:
@@ -96,13 +98,16 @@ class NVMLPowerBackend(PowerBackend):
 class JetsonSysfsPowerBackend(PowerBackend):
     _PREFERRED_LABEL_TOKENS = ("POM_5V_IN", "VDD_IN", "VIN_SYS_5V0", "TOTAL")
     _POWER_PATTERNS = (
+        # Keep these patterns bounded. Recursive globbing through /sys/devices can
+        # follow Jetson subsystem symlink loops and hang before inference starts.
         "/sys/bus/i2c/drivers/ina3221x/*/iio:device*/in_power*_input",
-        "/sys/devices/platform/**/iio:device*/in_power*_input",
+        "/sys/bus/i2c/drivers/ina3221/*/iio:device*/in_power*_input",
+        "/sys/bus/i2c/devices/*/iio:device*/in_power*_input",
         "/sys/class/hwmon/hwmon*/power*_input",
         "/sys/class/hwmon/hwmon*/in_power*_input",
     )
 
-    def __init__(self, selected_paths: list[Path], details: str):
+    def __init__(self, selected_paths: List[Path], details: str):
         self.selected_paths = selected_paths
         self.name = "jetson_sysfs"
         self.details = details
@@ -139,14 +144,17 @@ class JetsonSysfsPowerBackend(PowerBackend):
 
     @classmethod
     def try_create(cls) -> Optional["JetsonSysfsPowerBackend"]:
-        files: list[Path] = []
+        files: List[Path] = []
         for pattern in cls._POWER_PATTERNS:
-            files.extend(Path(p) for p in glob.glob(pattern, recursive=True))
+            try:
+                files.extend(Path(p) for p in glob.glob(pattern))
+            except OSError:
+                continue
         files = sorted({p for p in files if p.is_file()})
         if not files:
             return None
 
-        scored: list[tuple[int, Path, str]] = []
+        scored: List[Tuple[int, Path, str]] = []
         for path in files:
             label = cls._read_label(path).upper()
             score = 0
@@ -185,7 +193,7 @@ class PowerSampler:
     def __init__(self, backend: PowerBackend, interval_s: float):
         self.backend = backend
         self.interval_s = interval_s
-        self.samples_w: list[float] = []
+        self.samples_w: List[float] = []
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -231,13 +239,13 @@ def create_power_backend(device: torch.device, is_jetson: bool) -> PowerBackend:
     return NullPowerBackend("CPU run (no GPU power telemetry)")
 
 
-def dense_masks_from(pixel_masks: list[np.ndarray], tile_masks: list[np.ndarray]) -> tuple[list[np.ndarray], list[np.ndarray]]:
+def dense_masks_from(pixel_masks: List[np.ndarray], tile_masks: List[np.ndarray]) -> Tuple[List[np.ndarray], List[np.ndarray]]:
     dense_pixel_masks = [np.ones_like(mask, dtype=np.uint8) for mask in pixel_masks]
     dense_tile_masks = [np.ones_like(mask, dtype=np.uint8) for mask in tile_masks]
     return dense_pixel_masks, dense_tile_masks
 
 
-def list_roi_inputs(roi_dir: Path) -> list[Path]:
+def list_roi_inputs(roi_dir: Path) -> List[Path]:
     return sorted(roi_dir.rglob("roi_input.npz"))
 
 
@@ -256,14 +264,14 @@ def load_runner(weights_path: Path, device: torch.device, chunk_tiles: int) -> S
 
 
 def prepare_samples(
-    roi_paths: list[Path],
+    roi_paths: List[Path],
     device: torch.device,
     tile_width: int,
     tile_height: int,
     min_active_pixels: int,
     tile_count_method: str,
-) -> list[PreparedSample]:
-    prepared: list[PreparedSample] = []
+) -> List[PreparedSample]:
+    prepared: List[PreparedSample] = []
     for roi_path in roi_paths:
         bundle = np.load(roi_path)
         pixel_masks, tile_masks = build_layer_masks(
@@ -293,7 +301,7 @@ def prepare_samples(
 
 def run_mode(
     mode_name: str,
-    prepared: list[PreparedSample],
+    prepared: List[PreparedSample],
     runner: SparseMobileNetRunner,
     tile_width: int,
     tile_height: int,
@@ -328,7 +336,7 @@ def run_mode(
     sync_if_cuda(runner.device)
     sampler.start()
     start = time.perf_counter()
-    with torch.inference_mode():
+    with inference_context():
         for _ in range(iters):
             for sample in prepared:
                 _forward(sample)
@@ -373,7 +381,7 @@ def select_device(device_arg: str) -> torch.device:
 
 
 def run_warmup(
-    prepared: list[PreparedSample],
+    prepared: List[PreparedSample],
     runner: SparseMobileNetRunner,
     tile_width: int,
     tile_height: int,
@@ -381,7 +389,7 @@ def run_warmup(
 ) -> None:
     if warmup_iters <= 0:
         return
-    with torch.inference_mode():
+    with inference_context():
         for _ in range(warmup_iters):
             for sample in prepared:
                 runner.sparse_forward(
